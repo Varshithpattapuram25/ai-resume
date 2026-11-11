@@ -1,0 +1,55 @@
+ALEX CARTER
+Email: alex.carter@example.com | Phone: +91 98765 43210 | LinkedIn: linkedin.com/in/alexcarter | GitHub: github.com/alexcarter
+
+PROFESSIONAL SUMMARY
+Full Stack Developer with 2+ years of experience building scalable web applications, REST APIs, and interactive dashboards. Strong in JavaScript, TypeScript, React.js, Node.js, Express.js, MongoDB, and SQL. Passionate about creating clean user experiences, shipping products quickly, and improving developer workflows.
+
+TECHNICAL SKILLS
+- Languages: JavaScript, TypeScript, Python, C++, HTML, CSS
+- Frontend: React.js, Redux, Tailwind CSS, Next.js, Responsive Design
+- Backend: Node.js, Express.js, REST APIs, Authentication, JWT
+- Databases: MongoDB, PostgreSQL, MySQL, SQL
+- Cloud & DevOps: AWS Basics, Docker, Git, GitHub, CI/CD
+- AI/ML: Prompt Engineering, NLP Basics, Machine Learning Fundamentals
+
+PROJECTS
+1. CareerIQ – AI Resume Analyzer & Career Coach
+   - Built a SaaS-style platform for resume analysis, ATS scoring, skill-gap detection, and role matching.
+   - Developed frontend with React.js and TypeScript, including dashboard analytics and interactive pages.
+   - Implemented backend APIs for auth, file processing, analysis, and mentor guidance.
+   - Improved user engagement by designing a polished workflow from resume upload to role suggestions.
+   - Technologies: React, TypeScript, Node.js, Express, MongoDB, JWT
+
+2. Smart Inventory Dashboard
+   - Created a dashboard for tracking product inventory, supplier data, and sales trends.
+   - Reduced manual reporting by automating CSV upload workflows and chart-based analytics.
+   - Used REST APIs and database queries to update and visualize inventory metrics.
+   - Technologies: React, Express, PostgreSQL, Charting Libraries
+
+3. Campus Connect Portal
+   - Built a portal for students to view events, internships, and mentorship opportunities.
+   - Added authentication, profile management, and role-based access for admins and users.
+   - Improved communication between students and administrators through a structured dashboard.
+   - Technologies: React, Node.js, MongoDB, JWT
+
+EXPERIENCE
+FULL STACK DEVELOPER INTERN | TechNova Labs | 2023 - 2024
+- Built and maintained client-facing interfaces using React.js and modern CSS frameworks.
+- Created backend APIs for authentication, dashboards, and data retrieval.
+- Collaborated with designers and senior engineers to improve functionality and performance.
+- Contributed to product features like analytics pages, search, and role-based routing.
+
+EDUCATION
+B.Tech in Computer Science and Engineering
+VIT Vellore | 2020 - 2024 | CGPA: 8.9/10
+Relevant coursework: Data Structures, Algorithms, DBMS, Operating Systems, Computer Networks
+
+ACHIEVEMENTS
+- Ranked in top 10% of coding club members based on problem-solving performance.
+- Built 4+ projects using full-stack and frontend technologies.
+- Participated in hackathons focused on web apps, AI, and student innovation.
+
+CERTIFICATIONS
+- JavaScript Algorithms and Data Structures
+- Introduction to Full Stack Development
+- AWS Cloud Practitioner Essentials
