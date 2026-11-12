@@ -156,7 +156,7 @@ async function apiRequest<T>(path: string, method: 'GET' | 'POST' = 'GET', body?
 
 function App() {
   const [user, setUser] = useState<User | null>(getStoredUser())
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark')
+  const [theme, setTheme] = useState<'light' | 'dark'>('light')
 
   useEffect(() => {
     document.body.classList.toggle('light-theme', theme === 'light')

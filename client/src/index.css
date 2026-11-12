@@ -264,3 +264,225 @@ img, svg { display: block; }
   .landing-signup,
   .landing-dashboard { padding: 0.68rem 0.85rem; font-size: 0.82rem; }
 }
+
+body.light-theme {
+  background: #f5f7fb;
+  color: #172033;
+}
+
+body.light-theme .page-bg {
+  background:
+    radial-gradient(ellipse at 75% 4%, rgba(96, 165, 250, 0.1), transparent 30%),
+    #f5f7fb;
+}
+
+body.light-theme .nav-shell {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: #e7ebf2;
+  box-shadow: 0 4px 20px rgba(30, 50, 80, 0.04);
+}
+
+body.light-theme .badge {
+  color: #315da8;
+  border-color: #d7e4f8;
+  background: #edf4ff;
+}
+
+body.light-theme .hero-title span {
+  background-image: linear-gradient(100deg, #2563eb, #6366d9);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+body.light-theme .hero-description,
+body.light-theme .hero-highlights,
+body.light-theme .cta-panel p {
+  color: #586579 !important;
+}
+
+body.light-theme .hero-highlights svg {
+  color: #3974d8;
+}
+
+body.light-theme .preview-score-number {
+  color: #356bd6;
+}
+
+body.light-theme .preview-eyebrow,
+body.light-theme .preview-score-caption,
+body.light-theme .preview-score-copy p,
+body.light-theme .preview-chart-heading span:last-child,
+body.light-theme .preview-match-copy strong {
+  color: #586579;
+}
+
+body.light-theme .preview-chart-heading {
+  color: #34445c;
+}
+
+body.light-theme .preview-status {
+  color: #18764f;
+  border-color: #ccebdc;
+  background: #effaf4;
+}
+
+body.light-theme .preview-match-score {
+  color: #18764f;
+}
+
+body.light-theme .preview-match-icon {
+  color: #356bd6;
+  background: #edf4ff;
+}
+
+body.light-theme .preview-footnote,
+body.light-theme .benefit-strip p {
+  color: #586579;
+}
+
+body.light-theme .benefit-number {
+  color: #356bd6;
+}
+
+body.light-theme .primary-button {
+  border-color: transparent;
+  background: #356bd6;
+  box-shadow: 0 8px 18px rgba(53, 107, 214, 0.18);
+}
+
+body.light-theme .primary-button:hover {
+  background: #285abd;
+  box-shadow: 0 10px 22px rgba(53, 107, 214, 0.24);
+}
+
+body.light-theme .secondary-button,
+body.light-theme .icon-button {
+  color: #34445c;
+  background: #fff;
+  border-color: #dce3ed;
+}
+
+body.light-theme .feature-card,
+body.light-theme .metric-card,
+body.light-theme .panel-card,
+body.light-theme .auth-card,
+body.light-theme .stat-card,
+body.light-theme .cta-panel,
+body.light-theme .footer-shell {
+  border-color: #e5eaf1;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(30, 50, 80, 0.05);
+  backdrop-filter: none;
+}
+
+body.light-theme .feature-card {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+body.light-theme .feature-card:hover {
+  border-color: #cbd9ef;
+  box-shadow: 0 14px 30px rgba(30, 50, 80, 0.08);
+}
+
+body.light-theme .feature-icon {
+  color: #356bd6;
+  background: #edf4ff;
+}
+
+body.light-theme .step-num {
+  color: #315da8;
+  background: #edf4ff;
+}
+
+body.light-theme .footer-shell {
+  border-top-color: #e5eaf1;
+}
+
+body.light-theme .login-page,
+body.light-theme .dashboard-shell {
+  background: #f5f7fb;
+}
+
+body.light-theme .dashboard-sidebar {
+  background: #fff;
+  border-color: #e5eaf1;
+}
+
+body.light-theme .dashboard-nav-item {
+  color: #536178;
+}
+
+body.light-theme .dashboard-nav-item.active {
+  color: #285abd;
+  background: #edf4ff;
+  border-color: #d7e4f8;
+}
+
+body.light-theme .dashboard-header {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: #e5eaf1;
+}
+
+body.light-theme .resume-row,
+body.light-theme .roadmap-item,
+body.light-theme .input-shell {
+  color: #243248;
+  border-color: #e2e8f0;
+  background: #fff;
+}
+
+body.light-theme .input-shell label {
+  color: #65738a;
+}
+
+body.light-theme .input-shell input,
+body.light-theme .input-plain {
+  color: #172033;
+}
+
+body.light-theme .score-ring {
+  background: conic-gradient(#4b7fe0 0 88%, #e5eaf1 88% 100%);
+}
+
+body.light-theme .score-ring::before {
+  background: #fff;
+}
+
+body.light-theme .score-ring span {
+  color: #172033;
+}
+
+body.light-theme .bar-track {
+  background: #e8edf5;
+}
+
+body.light-theme .mini-pill,
+body.light-theme .tag-pill {
+  color: #42526b;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+button,
+a,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(59, 130, 246, 0.45);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
