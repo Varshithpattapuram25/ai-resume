@@ -1,7 +1,8 @@
 import { supabase } from './supabase'
 import type { ResumeAnalysis } from './resumes'
 
-const API_BASE = import.meta.env.VITE_GEMINI_API_BASE || 'http://localhost:5002/api'
+const API_BASE = import.meta.env.VITE_GEMINI_API_BASE
+  || (import.meta.env.PROD ? '/api' : 'http://localhost:5002/api')
 
 async function postGemini<T>(path: string, body: Record<string, unknown>): Promise<T> {
   const { data: { session }, error: sessionError } = await supabase.auth.getSession()

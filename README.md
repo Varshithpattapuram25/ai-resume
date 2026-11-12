@@ -19,7 +19,8 @@ and analysis results. The browser uses only the Supabase project URL and anon
 2. In the Supabase SQL Editor, run
    [`supabase/migrations/20261112000000_create_resume_analyzer_schema.sql`](./supabase/migrations/20261112000000_create_resume_analyzer_schema.sql).
    It creates the seven tables, indexes, auth profile trigger, RLS policies,
-   private `resumes` bucket, and owner-only Storage policies.
+   private `resumes` bucket, and owner-only Storage policies. The migration is
+   safe to rerun if a previous attempt stopped partway through.
 3. In **Authentication → URL Configuration**, set the local site URL to
    `http://localhost:5173` and add your production URL to the redirect allow-list.
    Enable **Allow anonymous sign-ins** under **Authentication → Sign In / Providers → Anonymous Sign-Ins** to use the guest option. Configure email confirmation as required by your deployment.
@@ -136,30 +137,30 @@ GEMINI_API_KEY=
 
 ## Deploy to Vercel
 
-The repository includes a root-level `vercel.json` for the Vite frontend.
-Supabase handles authentication and resume data, so the primary login and resume
-flows do not require a Render API deployment.
+The root `vercel.json` builds the Vite frontend and installs the Gemini API
+dependencies. The authenticated Gemini Express API is exposed as a Vercel
+serverless function in `api/[...path].js`; the production frontend calls it on
+the same origin.
 
-1. Push this project to a GitHub repository.
-2. In Vercel, import the repository and use the repository root as the
-   project root. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as
-   environment variables. The root `vercel.json` builds `client/` and configures
-   SPA routing.
-3. Set `VITE_GEMINI_API_BASE` to the deployed Render API URL ending in `/api`.
-   Redeploy Vercel after changing any `VITE_` variable.
-4. Add the deployed Vercel URL to Supabase's Authentication URL allow-list.
-5. In Render, set `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY`.
-   Set `CORS_ORIGINS` to the exact Vercel origin (for example
-   `https://your-app.vercel.app`) and deploy the `render.yaml` Gemini API
-   service. The Gemini key must only be configured as a Render secret.
+1. Import the GitHub repository into Vercel with the repository root as the
+   project root.
+2. Add these environment variables in the Vercel project settings. Use the same
+   Supabase project for both URL and anon/publishable keys:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `SUPABASE_URL`
+   - `SUPABASE_ANON_KEY`
+   - `GEMINI_API_KEY` (server-only; never prefix it with `VITE_`)
+3. Deploy or redeploy the project after adding the variables.
+4. Set the Supabase Authentication site URL to the Vercel production URL and
+   add that URL to the redirect allow-list.
+5. Apply the Supabase migration above and verify the private `resumes` bucket
+   exists before testing uploads.
 
-Deploy the Render service from `render.yaml` only if you still need the legacy
-Express endpoints; that service separately requires its MongoDB and JWT
-environment variables.
-
-The resume analysis and mentor features currently use demo logic without an
-AI provider connection. Do not treat demo scores or recommendations as
-professional hiring advice.
+The committed `render.yaml` is an alternative for deploying the Gemini API to
+Render instead of using the Vercel serverless function. In that case, set
+`VITE_GEMINI_API_BASE` in Vercel to the deployed API URL ending in `/api`, and
+configure the Render environment variables documented in `server/.env.example`.
 
 ## Scripts
 

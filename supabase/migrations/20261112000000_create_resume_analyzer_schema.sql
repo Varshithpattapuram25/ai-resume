@@ -166,6 +166,14 @@ grant select, insert, update, delete on public.users_profiles, public.resumes,
   public.resume_analyses, public.education, public.experience, public.projects,
   public.skills to authenticated;
 
+drop policy if exists "Users manage their own profile" on public.users_profiles;
+drop policy if exists "Users manage their own resumes" on public.resumes;
+drop policy if exists "Users manage their own resume analyses" on public.resume_analyses;
+drop policy if exists "Users manage their own education" on public.education;
+drop policy if exists "Users manage their own experience" on public.experience;
+drop policy if exists "Users manage their own projects" on public.projects;
+drop policy if exists "Users manage their own skills" on public.skills;
+
 create policy "Users manage their own profile"
   on public.users_profiles for all
   using ((select auth.uid()) = user_id)
@@ -216,6 +224,11 @@ on conflict (id) do update
 set public = excluded.public,
     file_size_limit = excluded.file_size_limit,
     allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "Users read their own resume files" on storage.objects;
+drop policy if exists "Users upload files to their own resume folder" on storage.objects;
+drop policy if exists "Users update files in their own resume folder" on storage.objects;
+drop policy if exists "Users delete files in their own resume folder" on storage.objects;
 
 create policy "Users read their own resume files"
   on storage.objects for select
