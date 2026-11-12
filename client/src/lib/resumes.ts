@@ -61,7 +61,11 @@ async function extractResumeText(file: File) {
   return result.value
 }
 
-export async function saveResume(file: File, targetRole = '') {
+export async function saveResume(
+  file: File,
+  targetRole = '',
+  onProgress?: (message: string) => void,
+) {
   requireSupabaseConfig()
   const extension = file.name.split('.').pop()?.toLowerCase()
   if (extension !== 'pdf' && extension !== 'docx') {
@@ -75,12 +79,15 @@ export async function saveResume(file: File, targetRole = '') {
   if (authError) throw authError
   if (!authData.user) throw new Error('Sign in before uploading a resume.')
 
+  onProgress?.('Extracting text from your resume...')
   const extractedText = await extractResumeText(file)
   if (!extractedText.trim()) {
     throw new Error('No readable text was found in the resume.')
   }
 
+  onProgress?.('Generating AI analysis. This can take up to 60 seconds...')
   const analysis = await analyzeResumeWithGemini(extractedText, targetRole)
+  onProgress?.('Saving your resume and analysis securely...')
   const fileType = extension.toUpperCase() as 'PDF' | 'DOCX'
   const contentType = fileType === 'PDF'
     ? 'application/pdf'

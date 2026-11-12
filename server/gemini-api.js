@@ -20,6 +20,8 @@ const GEMINI_REQUEST_WINDOW_MS = 60 * 60 * 1000;
 const GEMINI_MODEL_RETRIES = 1;
 const GEMINI_RETRY_DELAY_MS = 750;
 const GEMINI_MAX_RETRY_DELAY_MS = 2500;
+const GEMINI_GENERATION_TIMEOUT_MS = 60000;
+const GEMINI_REQUEST_TIMEOUT_MS = 25000;
 const allowedOrigins = new Set([
   'http://localhost:5173',
   'http://127.0.0.1:5173',
@@ -268,10 +270,18 @@ async function generateGeminiJson(systemInstruction, prompt, responseSchema, max
     throw error;
   }
 
+  const deadline = Date.now() + GEMINI_GENERATION_TIMEOUT_MS;
   const models = [geminiModel, ...geminiFallbackModels];
   for (let index = 0; index < models.length; index += 1) {
     const model = models[index];
     for (let attempt = 0; attempt <= GEMINI_MODEL_RETRIES; attempt += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        const error = new Error('Gemini is taking too long to respond. Please try again; your resume was not saved.');
+        error.status = 504;
+        throw error;
+      }
+
       let response;
       let result;
       try {
@@ -298,16 +308,23 @@ async function generateGeminiJson(systemInstruction, prompt, responseSchema, max
               },
               store: false,
             }),
-            signal: AbortSignal.timeout(60000),
+            signal: AbortSignal.timeout(Math.min(GEMINI_REQUEST_TIMEOUT_MS, remainingMs)),
           },
         );
         result = await response.json();
       } catch (error) {
+        if (Date.now() >= deadline) {
+          const timeoutError = new Error('Gemini is taking too long to respond. Please try again; your resume was not saved.');
+          timeoutError.status = 504;
+          throw timeoutError;
+        }
         if (index < models.length - 1) {
           console.warn(`Gemini request for ${model} failed; trying the next configured model.`);
           break;
         }
-        const requestError = new Error('Could not reach Gemini. Check your connection and try again.');
+        const requestError = new Error(error.name === 'TimeoutError'
+          ? 'Gemini did not respond in time. Please try again; your resume was not saved.'
+          : 'Could not reach Gemini. Check your connection and try again.');
         requestError.status = 502;
         throw requestError;
       }

@@ -622,6 +622,7 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
   const [mentorInput, setMentorInput] = useState('Which job role suits my skills?')
   const [sendingMentor, setSendingMentor] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState('')
   const [actionError, setActionError] = useState('')
 
   useEffect(() => {
@@ -822,10 +823,11 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
     if (!file) return
 
     setUploading(true)
+    setUploadProgress('Preparing your resume...')
     setActionError('')
 
     try {
-      const result = await saveResume(file)
+      const result = await saveResume(file, '', setUploadProgress)
 
       const fileEntry: ResumeItem = {
         id: result.id,
@@ -856,6 +858,7 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
       setActionError(error instanceof Error ? error.message : 'The resume could not be analyzed and saved.')
     } finally {
       setUploading(false)
+      setUploadProgress('')
       event.target.value = ''
     }
   }
@@ -1035,10 +1038,10 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
                 <p className="mt-2 text-sm text-slate-400">Supports PDF and DOCX files up to 5MB. Resume text is sent securely to Gemini for analysis.</p>
                 <label className="primary-button mt-6 inline-flex cursor-pointer">
                   Browse file
-                  <input type="file" className="hidden" accept=".pdf,.docx" onChange={handleResumeUpload} />
+                  <input type="file" className="hidden" accept=".pdf,.docx" onChange={handleResumeUpload} disabled={uploading} />
                 </label>
               </div>
-              {uploading && <div className="mt-4 text-sm text-sky-300">Processing resume and generating structured analysis...</div>}
+              {uploading && <div className="mt-4 text-sm text-sky-300" role="status" aria-live="polite">{uploadProgress}</div>}
             </div>
 
             <div className="panel-card p-6">
