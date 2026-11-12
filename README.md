@@ -151,6 +151,8 @@ the same origin.
    - `SUPABASE_URL`
    - `SUPABASE_ANON_KEY`
    - `GEMINI_API_KEY` (server-only; never prefix it with `VITE_`)
+   Vercel's `VERCEL_URL` environment variable is automatically allowed by the
+   Gemini API's CORS configuration for production and preview deployments.
 3. Deploy or redeploy the project after adding the variables.
 4. Set the Supabase Authentication site URL to the Vercel production URL and
    add that URL to the redirect allow-list.
