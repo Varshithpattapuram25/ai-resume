@@ -6,18 +6,52 @@ const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const dotenv = require('dotenv');
+const mongoose = require('mongoose');
 
 dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5001;
 const JWT_SECRET = process.env.JWT_SECRET || 'careeriq-demo-secret';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/careeriq';
 
-const users = [];
-const resumes = [];
-const analyses = [];
-const roadmaps = [];
-const chats = [];
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true },
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  passwordHash: { type: String, required: true, select: false },
+  role: { type: String, enum: ['user', 'admin'], default: 'user' },
+}, { timestamps: true });
+
+const resumeSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  fileName: { type: String, required: true },
+  fileType: { type: String, required: true },
+  fileData: { type: Buffer, required: true, select: false },
+  extractedText: { type: String, default: '' },
+  analysis: { type: mongoose.Schema.Types.Mixed, required: true },
+  uploadedAt: { type: Date, default: Date.now },
+});
+
+const roadmapSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  targetRole: { type: String, required: true },
+  milestones: { type: mongoose.Schema.Types.Mixed, required: true },
+  completedTasks: { type: [String], default: [] },
+  progress: { type: Number, min: 0, max: 100, default: 0 },
+}, { timestamps: true });
+
+const mentorMessageSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  role: { type: String, enum: ['user', 'assistant'], required: true },
+  text: { type: String, required: true },
+  context: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const User = mongoose.model('User', userSchema);
+const Resume = mongoose.model('Resume', resumeSchema);
+const Roadmap = mongoose.model('Roadmap', roadmapSchema);
+const MentorMessage = mongoose.model('MentorMessage', mentorMessageSchema);
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -57,10 +91,12 @@ const createToken = (user) =>
     expiresIn: '7d',
   });
 
-const getNextId = (items) => {
-  const maxId = items.reduce((max, item) => Math.max(max, Number(item.id || 0)), 0);
-  return String(maxId + 1);
-};
+const toPublicUser = (user) => ({
+  id: String(user._id),
+  name: user.name,
+  email: user.email,
+  role: user.role,
+});
 
 const buildDemoAnalysis = (text = '') => {
   const cleanText = safeText(text).toLowerCase();
@@ -216,18 +252,13 @@ const buildDemoAnalysis = (text = '') => {
   };
 };
 
-const demoUser = {
-  id: '1',
-  name: 'Demo User',
-  email: 'demo@careeriq.ai',
-  role: 'user',
-  passwordHash: bcrypt.hashSync('demo123', 10),
-};
-
-users.push(demoUser);
-
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, message: 'CareerIQ backend is active.' });
+  const connected = mongoose.connection.readyState === 1;
+  res.status(connected ? 200 : 503).json({
+    ok: connected,
+    database: connected ? 'connected' : 'disconnected',
+    message: connected ? 'CareerIQ API and database are active.' : 'Database connection is unavailable.',
+  });
 });
 
 app.post('/api/auth/register', async (req, res) => {
@@ -242,30 +273,32 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ message: 'Passwords do not match.' });
     }
 
-    const existing = users.find((user) => user.email.toLowerCase() === String(email).toLowerCase());
+    const normalizedEmail = sanitizeText(email).toLowerCase();
+    const existing = await User.exists({ email: normalizedEmail });
     if (existing) {
       return res.status(409).json({ message: 'An account with this email already exists.' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const newUser = {
-      id: getNextId(users),
+    const newUser = await User.create({
       name: sanitizeText(name),
-      email: sanitizeText(email).toLowerCase(),
+      email: normalizedEmail,
       passwordHash,
-      role: email.toLowerCase().includes('admin') ? 'admin' : 'user',
-      createdAt: new Date().toISOString(),
-    };
+      role: normalizedEmail.includes('admin') ? 'admin' : 'user',
+    });
 
-    users.push(newUser);
     const token = createToken(newUser);
 
     return res.status(201).json({
-      user: { id: newUser.id, name: newUser.name, email: newUser.email, role: newUser.role },
+      user: toPublicUser(newUser),
       token,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Registration failed.', error: error.message });
+    if (error.code === 11000) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+    console.error('Registration failed:', error);
+    return res.status(500).json({ message: 'Registration failed.' });
   }
 });
 
@@ -277,13 +310,10 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
-    const user = users.find((candidate) => candidate.email.toLowerCase() === String(email).toLowerCase());
+    const normalizedEmail = sanitizeText(email).toLowerCase();
+    const user = await User.findOne({ email: normalizedEmail }).select('+passwordHash');
 
     if (!user) {
-      if (String(email).toLowerCase() === 'demo@careeriq.ai' && password === 'demo123') {
-        const token = createToken(demoUser);
-        return res.json({ user: { id: demoUser.id, name: demoUser.name, email: demoUser.email, role: demoUser.role }, token });
-      }
       return res.status(401).json({ message: 'Invalid email or password.' });
     }
 
@@ -294,48 +324,54 @@ app.post('/api/auth/login', async (req, res) => {
 
     const token = createToken(user);
     return res.json({
-      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      user: toPublicUser(user),
       token,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Login failed.', error: error.message });
+    console.error('Login failed:', error);
+    return res.status(500).json({ message: 'Login failed.' });
   }
 });
 
-app.get('/api/auth/me', authMiddleware, (req, res) => {
-  const currentUser = users.find((user) => user.id === String(req.user.id));
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  const currentUser = await User.findById(req.user.id);
   if (!currentUser) {
     return res.status(404).json({ message: 'User not found.' });
   }
 
-  return res.json({
-    user: { id: currentUser.id, name: currentUser.name, email: currentUser.email, role: currentUser.role },
-  });
+  return res.json({ user: toPublicUser(currentUser) });
 });
 
-app.get('/api/dashboard/overview', authMiddleware, (req, res) => {
-  const summary = buildDemoAnalysis();
+app.get('/api/dashboard/overview', authMiddleware, async (req, res) => {
+  const userResumes = await Resume.find({ userId: req.user.id }).sort({ uploadedAt: 1 });
+  const latestResume = userResumes.at(-1);
+  const latestAnalysis = latestResume?.analysis;
+  const latestScore = latestAnalysis?.atsScore?.overall || 0;
+  const atsHistory = userResumes.map((resume) => resume.analysis?.atsScore?.overall || 0);
+  const recentResumes = [...userResumes].reverse().slice(0, 5).map((resume) => ({
+    name: resume.fileName,
+    score: resume.analysis?.atsScore?.overall || 0,
+    date: resume.uploadedAt.toISOString().slice(0, 10),
+  }));
+  const roadmap = await Roadmap.findOne({ userId: req.user.id });
   const overview = {
-    latestAtsScore: summary.atsScore.overall,
-    resumeQualityScore: 91,
-    placementReadiness: summary.placementReadiness.overall,
-    totalResumesAnalyzed: 5,
-    bestMatchingJobRole: 'Full Stack Developer',
-    skillImprovementProgress: 72,
-    ATSScoreHistory: [72, 74, 79, 81, 88],
-    recentResumes: [
-      { name: 'Resume_v3.pdf', score: 88, date: 'Today' },
-      { name: 'Resume_v2.pdf', score: 81, date: '2 days ago' },
-      { name: 'Resume_v1.pdf', score: 76, date: '1 week ago' },
-    ],
-    recommendations: summary.atsScore.recommendations,
+    latestAtsScore: latestScore,
+    resumeQualityScore: latestScore,
+    placementReadiness: latestAnalysis?.placementReadiness?.overall || 0,
+    totalResumesAnalyzed: userResumes.length,
+    bestMatchingJobRole: latestAnalysis?.jobMatches?.[0]?.role || 'Not available',
+    skillImprovementProgress: roadmap?.progress || 0,
+    ATSScoreHistory: atsHistory,
+    recentResumes,
+    recommendations: latestAnalysis?.atsScore?.recommendations || [],
   };
 
   res.json(overview);
 });
 
-app.get('/api/dashboard/insights', authMiddleware, (req, res) => {
-  const summary = buildDemoAnalysis();
+app.get('/api/dashboard/insights', authMiddleware, async (req, res) => {
+  const latestResume = await Resume.findOne({ userId: req.user.id }).sort({ uploadedAt: -1 });
+  const summary = latestResume?.analysis || buildDemoAnalysis();
   res.json({
     jobMatchChart: [
       { name: 'Frontend', value: 89 },
@@ -353,12 +389,18 @@ app.get('/api/dashboard/insights', authMiddleware, (req, res) => {
   });
 });
 
-app.get('/api/resumes', authMiddleware, (req, res) => {
-  const userResumes = resumes.filter((resume) => resume.userId === req.user.id);
-  res.json({ resumes: userResumes.length ? userResumes : [
-    { id: '1', name: 'Resume_v3.pdf', status: 'Analyzed', uploadedAt: '2026-11-11', score: 88 },
-    { id: '2', name: 'Resume_v2.docx', status: 'Draft', uploadedAt: '2026-10-15', score: 81 },
-  ] });
+app.get('/api/resumes', authMiddleware, async (req, res) => {
+  const userResumes = await Resume.find({ userId: req.user.id }).sort({ uploadedAt: -1 });
+  res.json({
+    resumes: userResumes.map((resume) => ({
+      id: String(resume._id),
+      name: resume.fileName,
+      fileType: resume.fileType,
+      status: 'Analyzed',
+      uploadedAt: resume.uploadedAt.toISOString(),
+      score: resume.analysis?.atsScore?.overall || 0,
+    })),
+  });
 });
 
 const extractResumeText = async (file) => {
@@ -400,53 +442,113 @@ app.post('/api/resume/analyze', authMiddleware, upload.single('resume'), async (
 
     const extractedText = await extractResumeText(file);
     const analysis = buildDemoAnalysis(extractedText);
-    const entry = {
-      id: getNextId(resumes),
-      userId: String(req.user.id),
+    const entry = await Resume.create({
+      userId: req.user.id,
       fileName: file.originalname,
       fileType: ext,
+      fileData: file.buffer,
       extractedText: safeText(extractedText),
-      uploadedAt: new Date().toISOString(),
       analysis,
-    };
-
-    resumes.push(entry);
-    analyses.push({ ...entry, userId: entry.userId });
+    });
 
     return res.json({
       message: 'Resume analyzed successfully.',
       analysis,
-      resume: { id: entry.id, fileName: entry.fileName, fileType: entry.fileType },
+      resume: { id: String(entry._id), fileName: entry.fileName, fileType: entry.fileType },
     });
   } catch (error) {
-    return res.status(500).json({ message: error.message || 'Resume processing failed.' });
+    console.error('Resume processing failed:', error);
+    return res.status(500).json({ message: 'Resume processing failed.' });
   }
 });
 
-app.get('/api/roadmap', authMiddleware, (req, res) => {
-  const summary = buildDemoAnalysis();
-  res.json({ roadmap: summary.roadmap });
+app.get('/api/resumes/:id/download', authMiddleware, async (req, res) => {
+  const resume = await Resume.findOne({ _id: req.params.id, userId: req.user.id }).select('+fileData');
+  if (!resume) {
+    return res.status(404).json({ message: 'Resume not found.' });
+  }
+
+  res.set('Content-Type', resume.fileType === 'pdf'
+    ? 'application/pdf'
+    : resume.fileType === 'docx'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : 'text/plain; charset=utf-8');
+  res.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(resume.fileName)}`);
+  return res.send(resume.fileData);
 });
 
-app.post('/api/roadmap/update', authMiddleware, (req, res) => {
+app.delete('/api/resumes/:id', authMiddleware, async (req, res) => {
+  const resume = await Resume.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+  if (!resume) {
+    return res.status(404).json({ message: 'Resume not found.' });
+  }
+  return res.json({ message: 'Resume deleted.' });
+});
+
+app.get('/api/roadmap', authMiddleware, async (req, res) => {
+  const summary = buildDemoAnalysis();
+  const roadmap = await Roadmap.findOneAndUpdate(
+    { userId: req.user.id },
+    {
+      $setOnInsert: {
+        targetRole: summary.roadmap.targetRole,
+        milestones: summary.roadmap.milestones,
+        completedTasks: [],
+        progress: 0,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+  res.json({ roadmap });
+});
+
+app.post('/api/roadmap/update', authMiddleware, async (req, res) => {
   const { targetRole, completedTasks = [], progress = 0 } = req.body || {};
   const summary = buildDemoAnalysis();
-  const roadmapRecord = {
-    userId: String(req.user.id),
-    targetRole: targetRole || summary.roadmap.targetRole,
-    milestones: summary.roadmap.milestones,
-    completedTasks,
-    progress,
-    updatedAt: new Date().toISOString(),
-  };
-  roadmaps.push(roadmapRecord);
-  res.json({ roadmap: roadmapRecord });
+  if (!Array.isArray(completedTasks) || !completedTasks.every((task) => typeof task === 'string')) {
+    return res.status(400).json({ message: 'Completed tasks must be a list of strings.' });
+  }
+  if (!Number.isFinite(progress) || progress < 0 || progress > 100) {
+    return res.status(400).json({ message: 'Progress must be a number from 0 to 100.' });
+  }
+
+  const roadmap = await Roadmap.findOneAndUpdate(
+    { userId: req.user.id },
+    {
+      $set: {
+        targetRole: sanitizeText(targetRole) || summary.roadmap.targetRole,
+        milestones: summary.roadmap.milestones,
+        completedTasks,
+        progress,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true },
+  );
+  return res.json({ roadmap });
 });
 
-app.post('/api/chat/mentor', authMiddleware, (req, res) => {
+app.get('/api/chat/history', authMiddleware, async (req, res) => {
+  const messages = await MentorMessage.find({ userId: req.user.id })
+    .sort({ createdAt: 1 })
+    .limit(200);
+  return res.json({
+    messages: messages.map((message) => ({
+      id: String(message._id),
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt.toISOString(),
+    })),
+  });
+});
+
+app.post('/api/chat/mentor', authMiddleware, async (req, res) => {
   const { message } = req.body || {};
+  const question = sanitizeText(message);
+  if (!question) {
+    return res.status(400).json({ message: 'Please enter a message.' });
+  }
   const summary = buildDemoAnalysis();
-  const lower = String(message || '').toLowerCase();
+  const lower = question.toLowerCase();
   let reply = 'Based on your resume, your strongest fit is in full-stack and frontend roles with good communication and project execution.';
 
   if (lower.includes('learn next')) {
@@ -459,32 +561,59 @@ app.post('/api/chat/mentor', authMiddleware, (req, res) => {
     reply = 'Build a production-style SaaS dashboard, a real-time chat app, and a data analytics project to strengthen your portfolio.';
   }
 
-  const session = {
-    userId: String(req.user.id),
-    role: 'assistant',
-    text: reply,
-    context: summary.summary,
-    createdAt: new Date().toISOString(),
-  };
-  chats.push(session);
+  await MentorMessage.create([
+    { userId: req.user.id, role: 'user', text: question },
+    { userId: req.user.id, role: 'assistant', text: reply, context: summary.summary },
+  ]);
 
   res.json({ reply, suggestedQuestions: summary.mentorSuggestions });
 });
 
-app.get('/api/admin/summary', authMiddleware, (req, res) => {
+app.get('/api/admin/summary', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Admin access is required.' });
   }
 
+  const [totalUsers, totalResumesProcessed] = await Promise.all([
+    User.countDocuments(),
+    Resume.countDocuments(),
+  ]);
   res.json({
-    totalUsers: users.length,
-    totalResumesProcessed: analyses.length,
-    analysisUsage: 128,
+    totalUsers,
+    totalResumesProcessed,
+    analysisUsage: totalResumesProcessed,
     popularRoles: ['Full Stack Developer', 'Frontend Developer', 'Data Analyst'],
     trends: [42, 56, 64, 68, 72, 81],
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`CareerIQ API running on http://localhost:${PORT}`);
+app.use((error, req, res, next) => {
+  if (res.headersSent) {
+    return next(error);
+  }
+  console.error('Unhandled API error:', error);
+  return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 500).json({
+    message: error.code === 'LIMIT_FILE_SIZE'
+      ? 'Resume files must be 5MB or smaller.'
+      : 'The request could not be completed.',
+  });
+});
+
+const startServer = async () => {
+  await mongoose.connect(MONGODB_URI);
+  await Promise.all(Object.values(mongoose.models).map((model) => model.init()));
+  const passwordHash = await bcrypt.hash('demo123', 10);
+  await User.updateOne(
+    { email: 'demo@careeriq.ai' },
+    { $setOnInsert: { name: 'Demo User', email: 'demo@careeriq.ai', passwordHash, role: 'user' } },
+    { upsert: true },
+  );
+  app.listen(PORT, () => {
+    console.log(`CareerIQ API running on http://localhost:${PORT} with MongoDB connected`);
+  });
+};
+
+startServer().catch((error) => {
+  console.error('Unable to connect to MongoDB:', error);
+  process.exit(1);
 });

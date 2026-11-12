@@ -55,6 +55,20 @@ GEMINI_API_KEY=
 - AI mentor chat mode with context-aware prompts
 - Demo mode when external AI credentials are not configured
 
+## Database persistence
+
+The API stores accounts, password hashes, uploaded resume files and extracted text,
+resume analyses, career roadmap progress, and mentor conversations in MongoDB.
+Set `MONGODB_URI` to a MongoDB connection string before starting the API. For local
+development, the default is `mongodb://127.0.0.1:27017/careeriq`; make sure MongoDB
+is running. The demo account (`demo@careeriq.ai` / `demo123`) is created in the
+database when the API starts.
+
+For deployment, create a MongoDB Atlas database and set `MONGODB_URI` as a secret
+environment variable for the API service. The Render Blueprint declares this
+variable as required; add it in the Render dashboard after creating the service.
+Never put production database credentials in source control or frontend variables.
+
 ## Demo mode note
 
 If AI keys are not available, the app uses structured demo analysis so the product remains functional while still clearly labeling generated estimates.
@@ -77,9 +91,6 @@ frontend with the API's public URL.
 4. Redeploy the Vercel project after changing `VITE_API_BASE`; Vite embeds this
    value at build time.
 
-The current backend stores users, resumes, and related data in memory. A
-Render restart will clear that data; MongoDB Atlas is not wired into the
-application yet, so configure persistence before using this for real users.
 The resume analysis and mentor features currently use demo logic without an
 AI provider connection. Do not treat demo scores or recommendations as
 professional hiring advice.

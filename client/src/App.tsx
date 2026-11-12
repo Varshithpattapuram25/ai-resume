@@ -122,6 +122,13 @@ type ResumeItem = {
   score: number
 }
 
+type MentorMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  createdAt: string
+}
+
 const getStoredUser = () => {
   const raw = localStorage.getItem('careeriq-user')
   try {
@@ -133,7 +140,7 @@ const getStoredUser = () => {
 
 const getStoredToken = () => localStorage.getItem('careeriq-token') || ''
 
-async function apiRequest<T>(path: string, method: 'GET' | 'POST' = 'GET', body?: Record<string, unknown> | FormData, token?: string): Promise<T> {
+async function apiRequest<T>(path: string, method: 'GET' | 'POST' | 'DELETE' = 'GET', body?: Record<string, unknown> | FormData, token?: string): Promise<T> {
   const headers: Record<string, string> = {}
   const isFormData = body instanceof FormData
 
@@ -491,20 +498,24 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
   const location = useLocation()
   const navigate = useNavigate()
   const [overview, setOverview] = useState(sampleScenario)
-  const [resumeFiles, setResumeFiles] = useState<ResumeItem[]>([
-    { id: '1', name: 'Resume_v3.pdf', status: 'Analyzed', uploadedAt: 'Today', score: 88 },
-    { id: '2', name: 'Resume_v2.docx', status: 'Draft', uploadedAt: '2 days ago', score: 81 },
-  ])
+  const [resumeFiles, setResumeFiles] = useState<ResumeItem[]>([])
+  const [mentorMessages, setMentorMessages] = useState<MentorMessage[]>([])
+  const [completedTasks, setCompletedTasks] = useState<string[]>([])
   const [mentorInput, setMentorInput] = useState('Which job role suits my skills?')
-  const [mentorReply, setMentorReply] = useState('Based on your profile, your strongest alignment is in Full Stack Developer and Frontend Developer roles.')
   const [sendingMentor, setSendingMentor] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [actionError, setActionError] = useState('')
 
   useEffect(() => {
-    const fetchOverview = async () => {
+    const fetchDashboardData = async () => {
       try {
         const token = getStoredToken()
-        const data = await apiRequest<{ latestAtsScore: number; resumeQualityScore: number; placementReadiness: number; totalResumesAnalyzed: number; bestMatchingJobRole: string; skillImprovementProgress: number; ATSScoreHistory: number[]; recentResumes: Array<{ name: string; score: number; date: string }>; recommendations: string[] }>( '/dashboard/overview', 'GET', undefined, token)
+        const [data, resumes, roadmap, chat] = await Promise.all([
+          apiRequest<{ latestAtsScore: number; resumeQualityScore: number; placementReadiness: number; totalResumesAnalyzed: number; bestMatchingJobRole: string; skillImprovementProgress: number; ATSScoreHistory: number[]; recentResumes: Array<{ name: string; score: number; date: string }>; recommendations: string[] }>('/dashboard/overview', 'GET', undefined, token),
+          apiRequest<{ resumes: Array<{ id: string; name: string; status: string; uploadedAt: string; score: number }> }>('/resumes', 'GET', undefined, token),
+          apiRequest<{ roadmap: { milestones: Array<{ month: string; tasks: string[] }>; completedTasks: string[]; progress: number } }>('/roadmap', 'GET', undefined, token),
+          apiRequest<{ messages: MentorMessage[] }>('/chat/history', 'GET', undefined, token),
+        ])
 
         setOverview({
           ...sampleScenario,
@@ -517,26 +528,54 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
           atsHistory: data.ATSScoreHistory,
           recentResumes: data.recentResumes,
           weaknesses: data.recommendations,
+          roadmap: roadmap.roadmap.milestones,
         })
+        setResumeFiles(resumes.resumes)
+        setCompletedTasks(roadmap.roadmap.completedTasks)
+        setMentorMessages(chat.messages)
+        setActionError('')
       } catch {
-        setOverview(sampleScenario)
+        setActionError('Could not load your saved information. Please check the API and database connection, then refresh.')
       }
     }
 
-    fetchOverview()
+    fetchDashboardData()
   }, [])
 
   const currentPath = location.pathname.replace('/dashboard/', '') || 'overview'
 
+  const toggleRoadmapTask = async (task: string) => {
+    const nextTasks = completedTasks.includes(task)
+      ? completedTasks.filter((completedTask) => completedTask !== task)
+      : [...completedTasks, task]
+    const totalTasks = overview.roadmap.reduce((total, item) => total + item.tasks.length, 0)
+    const progress = totalTasks ? Math.round((nextTasks.length / totalTasks) * 100) : 0
+
+    try {
+      await apiRequest('/roadmap/update', 'POST', { targetRole: overview.bestMatchingJobRole, completedTasks: nextTasks, progress }, getStoredToken())
+      setCompletedTasks(nextTasks)
+      setOverview((prev) => ({ ...prev, skillImprovementProgress: progress }))
+      setActionError('')
+    } catch {
+      setActionError('Your roadmap progress could not be saved.')
+    }
+  }
+
   const askMentor = async () => {
     setSendingMentor(true)
+    setActionError('')
     try {
       const token = getStoredToken()
       const result = await apiRequest<{ reply: string; suggestedQuestions: string[] }>('/chat/mentor', 'POST', { message: mentorInput }, token)
-      setMentorReply(result.reply)
+      const createdAt = new Date().toISOString()
+      setMentorMessages((messages) => [
+        ...messages,
+        { id: `${createdAt}-user`, role: 'user', text: mentorInput, createdAt },
+        { id: `${createdAt}-assistant`, role: 'assistant', text: result.reply, createdAt },
+      ])
       setOverview((prev) => ({ ...prev, mentorSuggestions: result.suggestedQuestions }))
     } catch {
-      setMentorReply('Based on your profile, your strongest fit is in full-stack and frontend roles with good communication and project execution.')
+      setActionError('Your message could not be saved. Please try again.')
     } finally {
       setSendingMentor(false)
     }
@@ -547,12 +586,13 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
     if (!file) return
 
     setUploading(true)
+    setActionError('')
 
     try {
       const formData = new FormData()
       formData.append('resume', file)
       const token = getStoredToken()
-      const result = await apiRequest<{ message: string; analysis: { atsScore: { overall: number; strengths: string[]; weaknesses: string[]; recommendations: string[] }; jobMatches: Array<{ role: string; match: number; reason: string }>; skillGaps: { current: string[]; missing: string[]; unverified: string[] }; personalInfo: { name: string; email: string } }; resume: { id: string; fileName: string } }>( '/resume/analyze', 'POST', formData, token)
+      const result = await apiRequest<{ message: string; analysis: { atsScore: { overall: number; strengths: string[]; weaknesses: string[]; recommendations: string[] }; placementReadiness: { overall: number }; jobMatches: Array<{ role: string; match: number; reason: string }>; skillGaps: { current: string[]; missing: string[]; unverified: string[] }; personalInfo: { name: string; email: string } }; resume: { id: string; fileName: string } }>( '/resume/analyze', 'POST', formData, token)
 
       const fileEntry: ResumeItem = {
         id: result.resume.id,
@@ -566,16 +606,66 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
       setOverview((prev) => ({
         ...prev,
         latestAtsScore: result.analysis.atsScore.overall,
+        resumeQualityScore: result.analysis.atsScore.overall,
+        placementReadiness: result.analysis.placementReadiness.overall,
+        totalResumesAnalyzed: prev.totalResumesAnalyzed + 1,
+        atsHistory: [...prev.atsHistory, result.analysis.atsScore.overall],
+        recentResumes: [
+          { name: result.resume.fileName, score: result.analysis.atsScore.overall, date: new Date().toISOString().slice(0, 10) },
+          ...prev.recentResumes,
+        ].slice(0, 5),
+        bestMatchingJobRole: result.analysis.jobMatches[0]?.role || prev.bestMatchingJobRole,
         strengths: result.analysis.atsScore.strengths,
         weaknesses: result.analysis.atsScore.weaknesses,
       }))
     } catch {
-      const fallbackEntry: ResumeItem = { id: Date.now().toString(), name: file.name, status: 'Demo analyzed', uploadedAt: 'Now', score: 88 }
-      setResumeFiles((prev) => [fallbackEntry, ...prev])
-      setOverview((prev) => ({ ...prev, latestAtsScore: 88, strengths: ['Strong project outcomes', 'Good relevant tools'], weaknesses: ['Add more metrics and DSA depth'] }))
+      setActionError('The resume could not be analyzed and saved. Please check your connection and try again.')
     } finally {
       setUploading(false)
       event.target.value = ''
+    }
+  }
+
+  const downloadResume = async (resume: ResumeItem) => {
+    try {
+      const response = await axios.get(`${API_BASE}/resumes/${resume.id}/download`, {
+        headers: { Authorization: `Bearer ${getStoredToken()}` },
+        responseType: 'blob',
+      })
+      const url = URL.createObjectURL(response.data)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = resume.name
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setActionError('The saved resume could not be downloaded.')
+    }
+  }
+
+  const deleteResume = async (resume: ResumeItem) => {
+    try {
+      await apiRequest(`/resumes/${resume.id}`, 'DELETE', undefined, getStoredToken())
+      const [savedResumes, data] = await Promise.all([
+        apiRequest<{ resumes: ResumeItem[] }>('/resumes', 'GET', undefined, getStoredToken()),
+        apiRequest<{ latestAtsScore: number; resumeQualityScore: number; placementReadiness: number; totalResumesAnalyzed: number; bestMatchingJobRole: string; skillImprovementProgress: number; ATSScoreHistory: number[]; recentResumes: Array<{ name: string; score: number; date: string }>; recommendations: string[] }>('/dashboard/overview', 'GET', undefined, getStoredToken()),
+      ])
+      setResumeFiles(savedResumes.resumes)
+      setOverview((prev) => ({
+        ...prev,
+        latestAtsScore: data.latestAtsScore,
+        resumeQualityScore: data.resumeQualityScore,
+        placementReadiness: data.placementReadiness,
+        totalResumesAnalyzed: data.totalResumesAnalyzed,
+        bestMatchingJobRole: data.bestMatchingJobRole,
+        skillImprovementProgress: data.skillImprovementProgress,
+        atsHistory: data.ATSScoreHistory,
+        recentResumes: data.recentResumes,
+        weaknesses: data.recommendations,
+      }))
+      setActionError('')
+    } catch {
+      setActionError('The saved resume could not be deleted.')
     }
   }
 
@@ -712,19 +802,19 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
           <div className="panel-card p-6">
             <div className="mb-6 flex items-center justify-between">
               <h3 className="text-xl font-semibold text-white">My resumes</h3>
-              <button className="primary-button">Upload another</button>
+              <button className="primary-button" onClick={() => navigate('/dashboard/resume-analyzer')}>Upload another</button>
             </div>
             <div className="space-y-4">
               {resumeFiles.map((resume) => (
                 <div key={resume.id} className="resume-row">
                   <div>
                     <p className="font-medium text-white">{resume.name}</p>
-                    <p className="text-xs text-slate-400">Uploaded {resume.uploadedAt}</p>
+                    <p className="text-xs text-slate-400">Uploaded {new Date(resume.uploadedAt).toLocaleDateString()}</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="score-pill">{resume.score}</span>
-                    <button className="secondary-button">Reanalyze</button>
-                    <button className="secondary-button danger">Delete</button>
+                    <button className="secondary-button" onClick={() => void downloadResume(resume)}>Download</button>
+                    <button className="secondary-button danger" onClick={() => void deleteResume(resume)}>Delete</button>
                   </div>
                 </div>
               ))}
@@ -813,7 +903,15 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
                   <div className="roadmap-badge">{roadmapItem.month}</div>
                   <div className="ml-4 flex flex-wrap gap-2">
                     {roadmapItem.tasks.map((task) => (
-                      <span key={task} className="tag-pill">{task}</span>
+                      <button
+                        key={task}
+                        type="button"
+                        aria-pressed={completedTasks.includes(task)}
+                        className={`tag-pill ${completedTasks.includes(task) ? 'suggest' : ''}`}
+                        onClick={() => toggleRoadmapTask(task)}
+                      >
+                        {completedTasks.includes(task) ? '✓ ' : ''}{task}
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -851,12 +949,18 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
                 <button key={question} className="tag-pill suggest" onClick={() => setMentorInput(question)}>{question}</button>
               ))}
             </div>
-            <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-sm text-slate-200">
-              {mentorReply}
+            <div className="mt-6 max-h-96 space-y-3 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-sm text-slate-200">
+              {mentorMessages.length === 0 && <p className="text-slate-400">Your saved mentor conversation will appear here.</p>}
+              {mentorMessages.map((message) => (
+                <div key={message.id} className={message.role === 'user' ? 'text-right' : 'text-left'}>
+                  <span className="mb-1 block text-xs text-slate-400">{message.role === 'user' ? 'You' : 'Career mentor'}</span>
+                  <p className="inline-block max-w-[90%] rounded-2xl bg-slate-800 px-4 py-2">{message.text}</p>
+                </div>
+              ))}
             </div>
             <div className="mt-5 flex gap-3">
-              <input value={mentorInput} onChange={(event) => setMentorInput(event.target.value)} className="input-plain" placeholder="Ask your mentor..." />
-              <button className="primary-button" onClick={askMentor} disabled={sendingMentor}>{sendingMentor ? 'Thinking...' : 'Ask'}</button>
+              <input value={mentorInput} onChange={(event) => setMentorInput(event.target.value)} className="input-plain" placeholder="Ask your mentor..." onKeyDown={(event) => { if (event.key === 'Enter' && !sendingMentor) void askMentor() }} />
+              <button className="primary-button" onClick={askMentor} disabled={sendingMentor || !mentorInput.trim()}>{sendingMentor ? 'Thinking...' : 'Ask'}</button>
             </div>
           </div>
         )
@@ -924,7 +1028,10 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
           </div>
         </header>
 
-        <div className="p-6">{renderView()}</div>
+        <div className="p-6">
+          {actionError && <p role="alert" className="error-banner mb-5">{actionError}</p>}
+          {renderView()}
+        </div>
       </main>
     </div>
   )
