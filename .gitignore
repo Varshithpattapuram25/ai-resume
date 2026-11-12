@@ -8,3 +8,4 @@ dist-ssr/
 *.log
 repair.py
 test.txt
+.vercel
