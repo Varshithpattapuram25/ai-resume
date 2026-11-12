@@ -26,26 +26,42 @@ import {
   Gauge,
   LayoutDashboard,
   LogOut,
+  MessageSquare,
   MoonStar,
   MoveRight,
+  RotateCcw,
   Search,
   Settings,
+  Sparkles,
   SunMedium,
   Target,
+  Trophy,
   Upload,
   UserRound,
   Wand2,
 } from 'lucide-react'
+import { deleteSavedResume, fetchResumeText, fetchResumes, getResumeUrl, saveResume } from './lib/resumes'
+import {
+  askGeminiMentor,
+  evaluateMockInterviewAnswer,
+  matchResumeToJob,
+  startMockInterview,
+  type JobMatchResult,
+  type MockInterviewQuestion,
+  type MockInterviewTurn,
+} from './lib/gemini'
+import { requireSupabaseConfig, supabase } from './lib/supabase'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5001/api'
 
 const features = [
   { title: 'AI Resume Analysis', description: 'Unlock actionable insights from your resume, skills, and experience.', icon: Wand2 },
   { title: 'ATS Score Checker', description: 'Measure your resume’s compatibility with modern hiring systems.', icon: Gauge },
-  { title: 'Job Role Matching', description: 'Find roles that align with your profile and growth trajectory.', icon: Target },
+  { title: 'Job Match Studio', description: 'Compare your resume with a real job description and get a tailored action plan.', icon: Target },
   { title: 'Skill Gap Detection', description: 'Spot missing strengths and prioritized learning paths.', icon: Search },
   { title: 'Career Roadmap', description: 'Turn your profile into a measurable six-month preparation plan.', icon: CheckCircle2 },
   { title: 'Placement Readiness', description: 'See how ready you are for interviews and recruiter screens.', icon: Briefcase },
+  { title: 'Live AI Mock Interview', description: 'Practice five personalized questions and get a clear answer-by-answer scorecard.', icon: MessageSquare },
   { title: 'Market Demand Insights', description: 'Get employer-market-aware suggestions and role fit guidance.', icon: BarChart3 },
   { title: 'AI Career Mentor', description: 'Ask role-specific questions and improve each stage of your job search.', icon: BrainCircuit },
 ]
@@ -61,7 +77,8 @@ const dashboardItems = [
   { label: 'Resume Analyzer', path: 'resume-analyzer', icon: Upload },
   { label: 'My Resumes', path: 'my-resumes', icon: FileText },
   { label: 'ATS Score', path: 'ats-score', icon: Gauge },
-  { label: 'Job Matches', path: 'job-matches', icon: Briefcase },
+  { label: 'Job Match Studio', path: 'job-matches', icon: Briefcase },
+  { label: 'Mock Interview', path: 'mock-interview', icon: MessageSquare },
   { label: 'Skills Analysis', path: 'skills-analysis', icon: Search },
   { label: 'Career Roadmap', path: 'career-roadmap', icon: Target },
   { label: 'Placement Preparation', path: 'placement-preparation', icon: CheckCircle2 },
@@ -120,6 +137,7 @@ type ResumeItem = {
   status: string
   uploadedAt: string
   score: number
+  storagePath: string
 }
 
 type MentorMessage = {
@@ -129,13 +147,14 @@ type MentorMessage = {
   createdAt: string
 }
 
-const getStoredUser = () => {
-  const raw = localStorage.getItem('careeriq-user')
-  try {
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
+type MockInterviewSession = {
+  role: string
+  resumeText: string
+  jobDescription: string
+  question: MockInterviewQuestion
+  questionNumber: number
+  turns: MockInterviewTurn[]
+  completed: boolean
 }
 
 const getStoredToken = () => localStorage.getItem('careeriq-token') || ''
@@ -162,18 +181,53 @@ async function apiRequest<T>(path: string, method: 'GET' | 'POST' | 'DELETE' = '
 }
 
 function App() {
-  const [user, setUser] = useState<User | null>(getStoredUser())
+  const [user, setUser] = useState<User | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [authError, setAuthError] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
 
   useEffect(() => {
     document.body.classList.toggle('light-theme', theme === 'light')
   }, [theme])
 
+  useEffect(() => {
+    let active = true
+    const applySession = (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+      if (!active) return
+      const sessionUser = session?.user
+      setUser(sessionUser ? {
+        id: sessionUser.id,
+        name: sessionUser.is_anonymous ? 'Guest' : sessionUser.user_metadata.full_name || sessionUser.email || 'User',
+        email: sessionUser.email || '',
+        role: sessionUser.app_metadata.role || 'user',
+      } : null)
+      setAuthReady(true)
+    }
+
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (error) {
+        setAuthError(error.message)
+        setAuthReady(true)
+        return
+      }
+      applySession(data.session)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => applySession(session))
+    return () => {
+      active = false
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  if (!authReady) return null
+
   return (
     <BrowserRouter>
       <div className={`app-shell ${theme}`}>
+        {authError && <p role="alert" className="error-banner m-4">{authError}</p>}
         <Routes>
-          <Route path="/" element={<LandingPage theme={theme} setTheme={setTheme} user={user} />} />
+          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/welcome" element={<LandingPage theme={theme} setTheme={setTheme} user={user} />} />
           <Route path="/login" element={<AuthPage mode="login" setUser={setUser} theme={theme} setTheme={setTheme} />} />
           <Route path="/register" element={<AuthPage mode="register" setUser={setUser} theme={theme} setTheme={setTheme} />} />
           <Route path="/dashboard/*" element={<ProtectedRoute user={user}><DashboardPage user={user} theme={theme} setTheme={setTheme} setUser={setUser} /></ProtectedRoute>} />
@@ -392,9 +446,34 @@ function LandingPage({ theme, setTheme, user }: { theme: 'light' | 'dark'; setTh
 
 function AuthPage({ mode, setUser, theme, setTheme }: { mode: 'login' | 'register'; setUser: (user: User | null) => void; theme: 'light' | 'dark'; setTheme: (value: 'light' | 'dark') => void }) {
   const navigate = useNavigate()
-  const [form, setForm] = useState({ name: '', email: 'demo@careeriq.ai', password: 'demo123', confirmPassword: '' })
+  const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  const continueAsGuest = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      requireSupabaseConfig()
+      const { data, error: authError } = await supabase.auth.signInAnonymously()
+      if (authError) throw authError
+      if (!data.user) throw new Error('Supabase did not return a guest session.')
+
+      setUser({
+        id: data.user.id,
+        name: 'Guest',
+        email: '',
+        role: 'user',
+      })
+      navigate('/dashboard/overview')
+    } catch (authError) {
+      setError(authError instanceof Error
+        ? `${authError.message} If anonymous sign-in is disabled, enable it under Supabase Authentication settings.`
+        : 'Could not start a guest session.')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -404,28 +483,36 @@ function AuthPage({ mode, setUser, theme, setTheme }: { mode: 'login' | 'registe
       setError('Passwords must match.')
       return
     }
+    if (mode === 'register' && !form.name.trim()) {
+      setError('Enter your full name.')
+      return
+    }
 
     try {
       setLoading(true)
-      const payload = mode === 'login'
-        ? { email: form.email, password: form.password }
-        : { name: form.name, email: form.email, password: form.password, confirmPassword: form.confirmPassword }
-
-      let data: { user: User; token: string } | null = null
-      try {
-        data = await apiRequest<{ user: User; token: string }>(mode === 'login' ? '/auth/login' : '/auth/register', 'POST', payload)
-      } catch {
-        if (mode === 'login' && form.email.toLowerCase() === 'demo@careeriq.ai' && form.password === 'demo123') {
-          data = { user: { id: '1', name: 'Demo User', email: form.email, role: 'user' }, token: 'demo-token' }
-        } else {
-          throw new Error('Authentication service is unavailable. Please try again later.')
-        }
+      requireSupabaseConfig()
+      const { data, error: authError } = mode === 'login'
+        ? await supabase.auth.signInWithPassword({ email: form.email, password: form.password })
+        : await supabase.auth.signUp({
+          email: form.email,
+          password: form.password,
+          options: { data: { full_name: form.name.trim() } },
+        })
+      if (authError) throw authError
+      if (!data.user) throw new Error('Supabase did not return an authenticated user.')
+      if (mode === 'register' && !data.session) {
+        setError('Account created. Check your email to confirm your address, then log in.')
+        return
       }
 
-      const loginUser = data.user
-      localStorage.setItem('careeriq-user', JSON.stringify(loginUser))
-      localStorage.setItem('careeriq-token', data.token)
-      setUser(loginUser)
+      localStorage.removeItem('careeriq-user')
+      localStorage.removeItem('careeriq-token')
+      setUser({
+        id: data.user.id,
+        name: data.user.user_metadata.full_name || data.user.email || 'User',
+        email: data.user.email || '',
+        role: data.user.app_metadata.role || 'user',
+      })
       navigate('/dashboard/overview')
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : 'Could not authenticate the user.')
@@ -442,7 +529,7 @@ function AuthPage({ mode, setUser, theme, setTheme }: { mode: 'login' | 'registe
         </button>
       </div>
       <div className="auth-card">
-        <Link to="/" className="mb-6 inline-flex items-center gap-2 text-sm text-sky-300"><MoveRight size={16} /> Back to home</Link>
+        <Link to="/welcome" className="mb-6 inline-flex items-center gap-2 text-sm text-sky-300"><MoveRight size={16} /> Back to home</Link>
         <h1 className="text-3xl font-bold text-white">{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
         <p className="mt-2 text-slate-400">{mode === 'login' ? 'Sign in to continue preparation and analysis.' : 'Start building a stronger career profile.'}</p>
 
@@ -481,7 +568,7 @@ function AuthPage({ mode, setUser, theme, setTheme }: { mode: 'login' | 'registe
           {error && <div className="error-banner">{error}</div>}
 
           <button type="submit" className="primary-button w-full justify-center" disabled={loading}>
-            {loading ? 'Please wait...' : mode === 'login' ? 'Login' : 'Create account'}
+            {mode === 'login' ? 'Login' : 'Create account'}
           </button>
         </form>
 
@@ -489,6 +576,16 @@ function AuthPage({ mode, setUser, theme, setTheme }: { mode: 'login' | 'registe
           {mode === 'login' ? 'Need an account?' : 'Already have an account?'}{' '}
           <Link to={mode === 'login' ? '/register' : '/login'} className="text-sky-300">{mode === 'login' ? 'Sign up' : 'Login'}</Link>
         </div>
+        {mode === 'login' && (
+          <div className="mt-5 border-t border-slate-700 pt-5 text-center">
+            <button type="button" className="secondary-button w-full justify-center" onClick={() => void continueAsGuest()} disabled={loading}>
+              Continue as guest
+            </button>
+            <p className="mt-3 text-xs text-slate-400">
+              No email needed. Guest resumes belong only to this browser account; signing out means you cannot recover them.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -497,10 +594,31 @@ function AuthPage({ mode, setUser, theme, setTheme }: { mode: 'login' | 'registe
 function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; theme: 'light' | 'dark'; setTheme: (value: 'light' | 'dark') => void; setUser: (user: User | null) => void }) {
   const location = useLocation()
   const navigate = useNavigate()
-  const [overview, setOverview] = useState(sampleScenario)
+  const [overview, setOverview] = useState<typeof sampleScenario>({
+    ...sampleScenario,
+    latestAtsScore: 0,
+    resumeQualityScore: 0,
+    placementReadiness: 0,
+    totalResumesAnalyzed: 0,
+    bestMatchingJobRole: 'Not available',
+    atsHistory: [],
+    recentResumes: [],
+    strengths: [],
+    weaknesses: [],
+  })
   const [resumeFiles, setResumeFiles] = useState<ResumeItem[]>([])
   const [mentorMessages, setMentorMessages] = useState<MentorMessage[]>([])
   const [completedTasks, setCompletedTasks] = useState<string[]>([])
+  const [selectedResumeId, setSelectedResumeId] = useState('')
+  const [jobDescription, setJobDescription] = useState('')
+  const [jobMatchResult, setJobMatchResult] = useState<JobMatchResult | null>(null)
+  const [matchingJob, setMatchingJob] = useState(false)
+  const [interviewResumeId, setInterviewResumeId] = useState('')
+  const [interviewRole, setInterviewRole] = useState('')
+  const [interviewJobDescription, setInterviewJobDescription] = useState('')
+  const [mockInterview, setMockInterview] = useState<MockInterviewSession | null>(null)
+  const [mockInterviewAnswer, setMockInterviewAnswer] = useState('')
+  const [mockInterviewBusy, setMockInterviewBusy] = useState(false)
   const [mentorInput, setMentorInput] = useState('Which job role suits my skills?')
   const [sendingMentor, setSendingMentor] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -509,38 +627,43 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
-        const token = getStoredToken()
-        const [data, resumes, roadmap, chat] = await Promise.all([
-          apiRequest<{ latestAtsScore: number; resumeQualityScore: number; placementReadiness: number; totalResumesAnalyzed: number; bestMatchingJobRole: string; skillImprovementProgress: number; ATSScoreHistory: number[]; recentResumes: Array<{ name: string; score: number; date: string }>; recommendations: string[] }>('/dashboard/overview', 'GET', undefined, token),
-          apiRequest<{ resumes: Array<{ id: string; name: string; status: string; uploadedAt: string; score: number }> }>('/resumes', 'GET', undefined, token),
-          apiRequest<{ roadmap: { milestones: Array<{ month: string; tasks: string[] }>; completedTasks: string[]; progress: number } }>('/roadmap', 'GET', undefined, token),
-          apiRequest<{ messages: MentorMessage[] }>('/chat/history', 'GET', undefined, token),
-        ])
-
+        const savedResumes = await fetchResumes()
+        const resumes = savedResumes.map((resume) => ({
+          id: resume.id,
+          name: resume.original_file_name,
+          status: resume.resume_status,
+          uploadedAt: resume.upload_date,
+          score: resume.analysis?.ats_score || 0,
+          storagePath: resume.uploaded_file_url,
+        }))
+        const analyses = savedResumes.flatMap((resume) => resume.analysis ? [resume.analysis] : [])
+        const latestAnalysis = analyses[0]
+        const atsHistory = analyses.slice(0, 5).map((analysis) => analysis.ats_score).reverse()
         setOverview({
           ...sampleScenario,
-          latestAtsScore: data.latestAtsScore,
-          resumeQualityScore: data.resumeQualityScore,
-          placementReadiness: data.placementReadiness,
-          totalResumesAnalyzed: data.totalResumesAnalyzed,
-          bestMatchingJobRole: data.bestMatchingJobRole,
-          skillImprovementProgress: data.skillImprovementProgress,
-          atsHistory: data.ATSScoreHistory,
-          recentResumes: data.recentResumes,
-          weaknesses: data.recommendations,
-          roadmap: roadmap.roadmap.milestones,
+          latestAtsScore: latestAnalysis?.ats_score || 0,
+          resumeQualityScore: latestAnalysis?.skills_score || 0,
+          placementReadiness: latestAnalysis?.keyword_match_score || 0,
+          totalResumesAnalyzed: savedResumes.length,
+          bestMatchingJobRole: latestAnalysis?.job_role_recommendations[0]?.role || 'Not available',
+          atsHistory,
+          recentResumes: resumes.slice(0, 5).map((resume) => ({
+            name: resume.name,
+            score: resume.score,
+            date: new Date(resume.uploadedAt).toLocaleDateString(),
+          })),
+          strengths: latestAnalysis?.strengths || [],
+          weaknesses: latestAnalysis?.improvement_suggestions || [],
         })
-        setResumeFiles(resumes.resumes)
-        setCompletedTasks(roadmap.roadmap.completedTasks)
-        setMentorMessages(chat.messages)
+        setResumeFiles(resumes)
         setActionError('')
-      } catch {
-        setActionError('Could not load your saved information. Please check the API and database connection, then refresh.')
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : 'Could not load your saved information.')
       }
     }
 
     fetchDashboardData()
-  }, [])
+  }, [user?.id])
 
   const currentPath = location.pathname.replace('/dashboard/', '') || 'overview'
 
@@ -551,34 +674,147 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
     const totalTasks = overview.roadmap.reduce((total, item) => total + item.tasks.length, 0)
     const progress = totalTasks ? Math.round((nextTasks.length / totalTasks) * 100) : 0
 
-    try {
-      await apiRequest('/roadmap/update', 'POST', { targetRole: overview.bestMatchingJobRole, completedTasks: nextTasks, progress }, getStoredToken())
-      setCompletedTasks(nextTasks)
-      setOverview((prev) => ({ ...prev, skillImprovementProgress: progress }))
-      setActionError('')
-    } catch {
-      setActionError('Your roadmap progress could not be saved.')
-    }
+    setCompletedTasks(nextTasks)
+    setOverview((prev) => ({ ...prev, skillImprovementProgress: progress }))
   }
 
   const askMentor = async () => {
     setSendingMentor(true)
     setActionError('')
     try {
-      const token = getStoredToken()
-      const result = await apiRequest<{ reply: string; suggestedQuestions: string[] }>('/chat/mentor', 'POST', { message: mentorInput }, token)
       const createdAt = new Date().toISOString()
+      const reply = await askGeminiMentor(mentorInput, {
+        atsScore: overview.latestAtsScore,
+        skillsScore: overview.resumeQualityScore,
+        keywordMatchScore: overview.placementReadiness,
+        targetRole: overview.bestMatchingJobRole,
+        strengths: overview.strengths,
+        weaknesses: overview.weaknesses,
+      })
       setMentorMessages((messages) => [
         ...messages,
         { id: `${createdAt}-user`, role: 'user', text: mentorInput, createdAt },
-        { id: `${createdAt}-assistant`, role: 'assistant', text: result.reply, createdAt },
+        { id: `${createdAt}-assistant`, role: 'assistant', text: reply, createdAt },
       ])
-      setOverview((prev) => ({ ...prev, mentorSuggestions: result.suggestedQuestions }))
-    } catch {
-      setActionError('Your message could not be saved. Please try again.')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Gemini could not answer your question.')
     } finally {
       setSendingMentor(false)
     }
+  }
+
+  const runJobMatch = async () => {
+    const resume = resumeFiles.find((item) => item.id === selectedResumeId) || resumeFiles[0]
+    if (!resume) {
+      setActionError('Upload a resume before matching it to a job description.')
+      return
+    }
+    if (jobDescription.trim().length < 80) {
+      setActionError('Paste a job description with at least 80 characters to get a useful match.')
+      return
+    }
+
+    setMatchingJob(true)
+    setJobMatchResult(null)
+    setActionError('')
+    try {
+      const resumeText = await fetchResumeText(resume.id)
+      const result = await matchResumeToJob(resumeText, jobDescription.trim())
+      setJobMatchResult(result)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'The job match could not be completed.')
+    } finally {
+      setMatchingJob(false)
+    }
+  }
+
+  const beginMockInterview = async () => {
+    const resume = resumeFiles.find((item) => item.id === interviewResumeId) || resumeFiles[0]
+    if (!resume) {
+      setActionError('Upload a resume before starting a mock interview.')
+      return
+    }
+    if (interviewRole.trim().length < 2) {
+      setActionError('Enter the role you are preparing to interview for.')
+      return
+    }
+
+    setMockInterviewBusy(true)
+    setMockInterview(null)
+    setActionError('')
+    try {
+      const resumeText = await fetchResumeText(resume.id)
+      const question = await startMockInterview(resumeText, interviewRole.trim(), interviewJobDescription.trim())
+      setMockInterview({
+        role: interviewRole.trim(),
+        resumeText,
+        jobDescription: interviewJobDescription.trim(),
+        question,
+        questionNumber: 1,
+        turns: [],
+        completed: false,
+      })
+      setMockInterviewAnswer('')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'The mock interview could not be started.')
+    } finally {
+      setMockInterviewBusy(false)
+    }
+  }
+
+  const submitMockInterviewAnswer = async () => {
+    if (!mockInterview) return
+    if (mockInterviewAnswer.trim().length < 20) {
+      setActionError('Write at least 20 characters so the interviewer can evaluate your answer.')
+      return
+    }
+
+    setMockInterviewBusy(true)
+    setActionError('')
+    try {
+      const evaluation = await evaluateMockInterviewAnswer({
+        resumeText: mockInterview.resumeText,
+        role: mockInterview.role,
+        jobDescription: mockInterview.jobDescription,
+        question: mockInterview.question.question,
+        focus: mockInterview.question.focus,
+        questionType: mockInterview.question.question_type,
+        answer: mockInterviewAnswer.trim(),
+        questionNumber: mockInterview.questionNumber,
+        history: mockInterview.turns.map(({ question, answer }) => ({ question, answer })),
+      })
+      const turn: MockInterviewTurn = {
+        question: mockInterview.question.question,
+        answer: mockInterviewAnswer.trim(),
+        score: evaluation.score,
+        feedback: evaluation.feedback,
+        strengths: evaluation.strengths,
+        improvements: evaluation.improvements,
+        sample_answer: evaluation.sample_answer,
+      }
+      setMockInterview({
+        ...mockInterview,
+        question: evaluation.completed ? mockInterview.question : {
+          question: evaluation.next_question,
+          focus: evaluation.next_focus,
+          question_type: evaluation.next_question_type,
+        },
+        questionNumber: evaluation.completed ? mockInterview.questionNumber : mockInterview.questionNumber + 1,
+        turns: [...mockInterview.turns, turn],
+        completed: evaluation.completed,
+      })
+      setMockInterviewAnswer('')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Your answer could not be evaluated.')
+    } finally {
+      setMockInterviewBusy(false)
+    }
+  }
+
+  const resetMockInterview = () => {
+    setMockInterview(null)
+    setMockInterviewAnswer('')
+    setActionError('')
   }
 
   const handleResumeUpload = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -589,37 +825,35 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
     setActionError('')
 
     try {
-      const formData = new FormData()
-      formData.append('resume', file)
-      const token = getStoredToken()
-      const result = await apiRequest<{ message: string; analysis: { atsScore: { overall: number; strengths: string[]; weaknesses: string[]; recommendations: string[] }; placementReadiness: { overall: number }; jobMatches: Array<{ role: string; match: number; reason: string }>; skillGaps: { current: string[]; missing: string[]; unverified: string[] }; personalInfo: { name: string; email: string } }; resume: { id: string; fileName: string } }>( '/resume/analyze', 'POST', formData, token)
+      const result = await saveResume(file)
 
       const fileEntry: ResumeItem = {
-        id: result.resume.id,
-        name: result.resume.fileName,
-        status: 'Analyzed',
-        uploadedAt: 'Just now',
-        score: result.analysis.atsScore.overall,
+        id: result.id,
+        name: file.name,
+        status: 'analyzed',
+        uploadedAt: new Date().toISOString(),
+        score: result.analysis.ats_score,
+        storagePath: result.path,
       }
 
       setResumeFiles((prev) => [fileEntry, ...prev])
       setOverview((prev) => ({
         ...prev,
-        latestAtsScore: result.analysis.atsScore.overall,
-        resumeQualityScore: result.analysis.atsScore.overall,
-        placementReadiness: result.analysis.placementReadiness.overall,
+        latestAtsScore: result.analysis.ats_score,
+        resumeQualityScore: result.analysis.skills_score,
+        placementReadiness: result.analysis.keyword_match_score,
         totalResumesAnalyzed: prev.totalResumesAnalyzed + 1,
-        atsHistory: [...prev.atsHistory, result.analysis.atsScore.overall],
+        atsHistory: [...prev.atsHistory, result.analysis.ats_score].slice(-5),
         recentResumes: [
-          { name: result.resume.fileName, score: result.analysis.atsScore.overall, date: new Date().toISOString().slice(0, 10) },
+          { name: file.name, score: result.analysis.ats_score, date: new Date().toLocaleDateString() },
           ...prev.recentResumes,
         ].slice(0, 5),
-        bestMatchingJobRole: result.analysis.jobMatches[0]?.role || prev.bestMatchingJobRole,
-        strengths: result.analysis.atsScore.strengths,
-        weaknesses: result.analysis.atsScore.weaknesses,
+        bestMatchingJobRole: result.analysis.job_role_recommendations[0]?.role || prev.bestMatchingJobRole,
+        strengths: result.analysis.strengths,
+        weaknesses: result.analysis.improvement_suggestions,
       }))
-    } catch {
-      setActionError('The resume could not be analyzed and saved. Please check your connection and try again.')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'The resume could not be analyzed and saved.')
     } finally {
       setUploading(false)
       event.target.value = ''
@@ -628,54 +862,80 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
 
   const downloadResume = async (resume: ResumeItem) => {
     try {
-      const response = await axios.get(`${API_BASE}/resumes/${resume.id}/download`, {
-        headers: { Authorization: `Bearer ${getStoredToken()}` },
-        responseType: 'blob',
-      })
-      const url = URL.createObjectURL(response.data)
+      const url = await getResumeUrl(resume.storagePath, true)
       const link = document.createElement('a')
       link.href = url
       link.download = resume.name
       link.click()
-      URL.revokeObjectURL(url)
-    } catch {
-      setActionError('The saved resume could not be downloaded.')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'The saved resume could not be downloaded.')
+    }
+  }
+
+  const viewResume = async (resume: ResumeItem) => {
+    try {
+      const url = await getResumeUrl(resume.storagePath)
+      window.open(url, '_blank', 'noopener,noreferrer')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'The saved resume could not be opened.')
     }
   }
 
   const deleteResume = async (resume: ResumeItem) => {
     try {
-      await apiRequest(`/resumes/${resume.id}`, 'DELETE', undefined, getStoredToken())
-      const [savedResumes, data] = await Promise.all([
-        apiRequest<{ resumes: ResumeItem[] }>('/resumes', 'GET', undefined, getStoredToken()),
-        apiRequest<{ latestAtsScore: number; resumeQualityScore: number; placementReadiness: number; totalResumesAnalyzed: number; bestMatchingJobRole: string; skillImprovementProgress: number; ATSScoreHistory: number[]; recentResumes: Array<{ name: string; score: number; date: string }>; recommendations: string[] }>('/dashboard/overview', 'GET', undefined, getStoredToken()),
-      ])
-      setResumeFiles(savedResumes.resumes)
+      await deleteSavedResume({
+        id: resume.id,
+        original_file_name: resume.name,
+        uploaded_file_url: resume.storagePath,
+        file_type: resume.name.toLowerCase().endsWith('.pdf') ? 'PDF' : 'DOCX',
+        upload_date: resume.uploadedAt,
+        resume_status: resume.status,
+        analysis: null,
+      })
+      const savedResumes = await fetchResumes()
+      const remainingResumes = savedResumes.map((item) => ({
+        id: item.id,
+        name: item.original_file_name,
+        status: item.resume_status,
+        uploadedAt: item.upload_date,
+        score: item.analysis?.ats_score || 0,
+        storagePath: item.uploaded_file_url,
+      }))
+      const latestAnalysis = savedResumes[0]?.analysis
+      setResumeFiles(remainingResumes)
       setOverview((prev) => ({
         ...prev,
-        latestAtsScore: data.latestAtsScore,
-        resumeQualityScore: data.resumeQualityScore,
-        placementReadiness: data.placementReadiness,
-        totalResumesAnalyzed: data.totalResumesAnalyzed,
-        bestMatchingJobRole: data.bestMatchingJobRole,
-        skillImprovementProgress: data.skillImprovementProgress,
-        atsHistory: data.ATSScoreHistory,
-        recentResumes: data.recentResumes,
-        weaknesses: data.recommendations,
+        latestAtsScore: latestAnalysis?.ats_score || 0,
+        resumeQualityScore: latestAnalysis?.skills_score || 0,
+        placementReadiness: latestAnalysis?.keyword_match_score || 0,
+        totalResumesAnalyzed: savedResumes.length,
+        bestMatchingJobRole: latestAnalysis?.job_role_recommendations[0]?.role || 'Not available',
+        atsHistory: savedResumes.flatMap((item) => item.analysis ? [item.analysis.ats_score] : []).slice(0, 5).reverse(),
+        recentResumes: remainingResumes.slice(0, 5).map((item) => ({
+          name: item.name,
+          score: item.score,
+          date: new Date(item.uploadedAt).toLocaleDateString(),
+        })),
+        strengths: latestAnalysis?.strengths || [],
+        weaknesses: latestAnalysis?.improvement_suggestions || [],
       }))
       setActionError('')
-    } catch {
-      setActionError('The saved resume could not be deleted.')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'The saved resume could not be deleted.')
     }
   }
 
-  const logout = () => {
+  const logout = async () => {
+    const { error } = await supabase.auth.signOut()
+    if (error) {
+      setActionError(error.message)
+      return
+    }
     localStorage.removeItem('careeriq-user')
     localStorage.removeItem('careeriq-token')
     setUser(null)
     navigate('/login')
   }
-
   const renderView = () => {
     switch (currentPath) {
       case 'overview':
@@ -772,10 +1032,10 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
               <div className="mt-6 rounded-3xl border border-dashed border-sky-500/60 bg-slate-950/40 p-8 text-center">
                 <Upload className="mx-auto text-sky-300" size={32} />
                 <p className="mt-4 text-lg text-white">Drag and drop your resume file or browse.</p>
-                <p className="mt-2 text-sm text-slate-400">Supports PDF, DOCX, and TXT files up to 5MB.</p>
+                <p className="mt-2 text-sm text-slate-400">Supports PDF and DOCX files up to 5MB. Resume text is sent securely to Gemini for analysis.</p>
                 <label className="primary-button mt-6 inline-flex cursor-pointer">
                   Browse file
-                  <input type="file" className="hidden" accept=".pdf,.docx,.txt" onChange={handleResumeUpload} />
+                  <input type="file" className="hidden" accept=".pdf,.docx" onChange={handleResumeUpload} />
                 </label>
               </div>
               {uploading && <div className="mt-4 text-sm text-sky-300">Processing resume and generating structured analysis...</div>}
@@ -784,6 +1044,7 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
             <div className="panel-card p-6">
               <h3 className="mb-4 text-xl font-semibold text-white">Analysis history</h3>
               <div className="space-y-3">
+                {resumeFiles.length === 0 && <p className="text-sm text-slate-400">No analysis history yet. Upload a PDF or DOCX resume to begin.</p>}
                 {resumeFiles.map((resume) => (
                   <div key={resume.id} className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/40 p-3">
                     <div>
@@ -805,6 +1066,7 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
               <button className="primary-button" onClick={() => navigate('/dashboard/resume-analyzer')}>Upload another</button>
             </div>
             <div className="space-y-4">
+              {resumeFiles.length === 0 && <p className="text-sm text-slate-400">No resumes uploaded yet.</p>}
               {resumeFiles.map((resume) => (
                 <div key={resume.id} className="resume-row">
                   <div>
@@ -813,6 +1075,7 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="score-pill">{resume.score}</span>
+                    <button className="secondary-button" onClick={() => void viewResume(resume)}>View</button>
                     <button className="secondary-button" onClick={() => void downloadResume(resume)}>Download</button>
                     <button className="secondary-button danger" onClick={() => void deleteResume(resume)}>Delete</button>
                   </div>
@@ -855,23 +1118,382 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
         )
       case 'job-matches':
         return (
-          <div className="space-y-5">
-            {[
-              { role: 'Full Stack Developer', match: 92, reason: 'Strong backend and frontend overlap with your current profile.' },
-              { role: 'Frontend Developer', match: 89, reason: 'Your UI workflow and frontend stack are highly relevant.' },
-              { role: 'Data Analyst', match: 72, reason: 'Your resume shows good analytical thinking with room for statistics depth.' },
-            ].map((item) => (
-              <div key={item.role} className="panel-card p-6">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-white">{item.role}</h3>
-                  <span className="score-pill">{item.match}%</span>
+          <div className="space-y-6">
+            <section className="job-match-hero overflow-hidden rounded-3xl border border-sky-400/20 bg-[radial-gradient(ellipse_at_90%_0%,rgba(124,58,237,0.22),transparent_42%),linear-gradient(135deg,rgba(8,47,73,0.7),rgba(15,23,42,0.92))] p-6 md:p-8">
+              <div className="flex flex-wrap items-start justify-between gap-5">
+                <div className="max-w-2xl">
+                  <span className="inline-flex items-center gap-2 rounded-full border border-sky-300/20 bg-sky-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-sky-200">
+                    <Sparkles size={14} /> AI-powered job targeting
+                  </span>
+                  <h3 className="mt-4 text-2xl font-bold text-white md:text-3xl">Job Match Studio</h3>
+                  <p className="mt-3 text-sm leading-6 text-slate-300">
+                    See how your resume stacks up against a real role. Get an evidence-based match score,
+                    missing keywords, and stronger bullet suggestions—without inventing experience.
+                  </p>
                 </div>
-                <p className="mt-3 text-sm text-slate-300">{item.reason}</p>
-                <div className="mt-4 text-sm text-slate-400">Required skills: React.js, Node.js, SQL, APIs</div>
+                <div className="job-match-privacy rounded-2xl border border-white/10 bg-slate-950/30 px-4 py-3 text-sm text-slate-300">
+                  <p className="font-semibold text-white">Private by design</p>
+                  <p className="mt-1 max-w-xs text-xs leading-5 text-slate-400">Your saved resume is sent securely for this comparison and is not added to AI chat history.</p>
+                </div>
               </div>
-            ))}
+
+              <div className="mt-7 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+                <label className="block text-sm font-medium text-slate-200">
+                  Choose a saved resume
+                  <select
+                    value={resumeFiles.some((resume) => resume.id === selectedResumeId) ? selectedResumeId : resumeFiles[0]?.id || ''}
+                    onChange={(event) => {
+                      setSelectedResumeId(event.target.value)
+                      setJobMatchResult(null)
+                    }}
+                    disabled={resumeFiles.length === 0 || matchingJob}
+                    className="job-match-control mt-2 w-full rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-slate-100 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20 disabled:opacity-60"
+                  >
+                    {resumeFiles.length === 0 && <option value="">Upload a resume to get started</option>}
+                    {resumeFiles.map((resume) => <option key={resume.id} value={resume.id}>{resume.name}</option>)}
+                  </select>
+                </label>
+                <div className="text-sm font-medium text-slate-200">
+                  Paste the job description
+                  <textarea
+                    value={jobDescription}
+                    onChange={(event) => {
+                      setJobDescription(event.target.value)
+                      setJobMatchResult(null)
+                    }}
+                    disabled={matchingJob}
+                    rows={5}
+                    maxLength={15000}
+                    placeholder="Paste the responsibilities, requirements, and skills from the job post..."
+                    className="job-match-control mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm leading-6 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20 disabled:opacity-60"
+                  />
+                  <p className="mt-1 text-right text-xs text-slate-400">{jobDescription.length.toLocaleString()} / 15,000</p>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-4">
+                <button
+                  type="button"
+                  className="primary-button inline-flex items-center gap-2"
+                  onClick={() => void runJobMatch()}
+                  disabled={matchingJob || resumeFiles.length === 0 || jobDescription.trim().length < 80}
+                >
+                  <Sparkles size={16} />
+                  {matchingJob ? 'Comparing your resume…' : 'Analyze my match'}
+                </button>
+                {resumeFiles.length === 0
+                  ? <button type="button" className="text-sm font-medium text-sky-300 hover:text-sky-200" onClick={() => navigate('/dashboard/resume-analyzer')}>Upload a resume first <ChevronRight className="inline" size={15} /></button>
+                  : <span className="text-xs text-slate-400">Add at least 80 characters from the job post.</span>}
+              </div>
+              {matchingJob && <p role="status" className="mt-4 text-sm text-sky-200">Comparing requirements with your saved resume evidence…</p>}
+            </section>
+
+            {jobMatchResult ? (
+              <div className="space-y-5">
+                <section className="panel-card p-6 md:p-8">
+                  <div className="grid items-center gap-6 md:grid-cols-[auto_1fr]">
+                    <div
+                      className="mx-auto grid h-36 w-36 place-items-center rounded-full"
+                      style={{ background: `conic-gradient(#34d399 ${jobMatchResult.match_score}%, rgba(148,163,184,0.18) ${jobMatchResult.match_score}% 100%)` }}
+                      role="img"
+                      aria-label={`Job match score: ${jobMatchResult.match_score} percent`}
+                    >
+                      <div className="job-match-score-core grid h-28 w-28 place-items-center rounded-full bg-slate-950 text-center">
+                        <div><strong className="job-match-score-value block text-4xl font-bold text-white">{jobMatchResult.match_score}</strong><span className="text-xs uppercase tracking-widest text-slate-400">match score</span></div>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Your role fit snapshot</p>
+                      <h4 className="mt-2 text-xl font-semibold text-white">Here’s where you stand</h4>
+                      <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300">{jobMatchResult.summary}</p>
+                    </div>
+                  </div>
+                </section>
+
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <section className="panel-card p-6">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="text-emerald-300" size={19} />
+                      <h4 className="text-lg font-semibold text-white">Your strengths for this role</h4>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {jobMatchResult.matched_skills.length
+                        ? jobMatchResult.matched_skills.map((skill) => <span key={skill} className="tag-pill suggest">{skill}</span>)
+                        : <p className="text-sm text-slate-400">No direct skill matches were identified from the resume text.</p>}
+                    </div>
+                  </section>
+                  <section className="panel-card p-6">
+                    <div className="flex items-center gap-2">
+                      <Search className="text-amber-300" size={19} />
+                      <h4 className="text-lg font-semibold text-white">Keywords to address</h4>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {jobMatchResult.missing_keywords.length
+                        ? jobMatchResult.missing_keywords.map((keyword) => <span key={keyword} className="tag-pill warning">{keyword}</span>)
+                        : <p className="text-sm text-slate-400">No major missing keywords were identified.</p>}
+                    </div>
+                    <p className="mt-3 text-xs text-slate-400">Only add these if they accurately reflect your experience.</p>
+                  </section>
+                </div>
+
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <section className="panel-card p-6">
+                    <h4 className="text-lg font-semibold text-white">Experience gaps to review</h4>
+                    <ul className="mt-4 space-y-3">
+                      {jobMatchResult.experience_gaps.length
+                        ? jobMatchResult.experience_gaps.map((gap) => <li key={gap} className="flex gap-3 text-sm leading-6 text-slate-300"><span className="mt-1 text-amber-300">•</span>{gap}</li>)
+                        : <li className="text-sm text-slate-400">No major experience gaps were identified.</li>}
+                    </ul>
+                  </section>
+                  <section className="panel-card p-6">
+                    <h4 className="text-lg font-semibold text-white">Your next best moves</h4>
+                    <ol className="mt-4 space-y-3">
+                      {jobMatchResult.priority_actions.map((action, index) => (
+                        <li key={action} className="flex gap-3 text-sm leading-6 text-slate-300">
+                          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-sky-400/10 text-xs font-bold text-sky-300">{index + 1}</span>{action}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                </div>
+
+                <section className="panel-card p-6">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-300">AI rewrite coach</p>
+                      <h4 className="mt-1 text-lg font-semibold text-white">Stronger bullets, grounded in your resume</h4>
+                    </div>
+                    <span className="text-xs text-slate-400">Review every suggestion for accuracy before using it.</span>
+                  </div>
+                  <div className="mt-4 grid gap-3">
+                    {jobMatchResult.tailored_bullets.length
+                      ? jobMatchResult.tailored_bullets.map((bullet, index) => (
+                        <div key={bullet} className="rounded-2xl border border-violet-400/15 bg-violet-400/5 p-4">
+                          <span className="text-xs font-semibold text-violet-300">SUGGESTION {index + 1}</span>
+                          <p className="mt-2 text-sm leading-6 text-slate-200">{bullet}</p>
+                        </div>
+                      ))
+                      : <p className="text-sm text-slate-400">There is not enough resume evidence for a safe bullet rewrite. Add more detail to your saved resume first.</p>}
+                  </div>
+                </section>
+              </div>
+            ) : (
+              <section className="panel-card grid gap-5 p-6 md:grid-cols-[1fr_auto] md:items-center">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-300">One tailored report. No guesswork.</p>
+                  <h4 className="mt-2 text-lg font-semibold text-white">Know what to emphasize before you apply.</h4>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">The match is based on your saved resume and the exact job post—not generic sample roles. Suggestions never add credentials or achievements you haven’t provided.</p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {['Role fit score', 'Keyword gaps', 'Bullet rewrites'].map((item) => <span key={item} className="tag-pill">{item}</span>)}
+                </div>
+              </section>
+            )}
           </div>
         )
+      case 'mock-interview': {
+        const averageScore = mockInterview?.turns.length
+          ? Math.round(mockInterview.turns.reduce((sum, turn) => sum + turn.score, 0) / mockInterview.turns.length)
+          : 0
+        const latestTurn = mockInterview?.turns.at(-1)
+        const interviewProgress = mockInterview
+          ? mockInterview.completed ? 100 : Math.round(((mockInterview.questionNumber - 1) / 5) * 100)
+          : 0
+
+        return (
+          <div className="space-y-6">
+            <section className="job-match-hero overflow-hidden rounded-3xl border border-violet-400/20 bg-[radial-gradient(ellipse_at_90%_0%,rgba(124,58,237,0.24),transparent_42%),linear-gradient(135deg,rgba(49,46,129,0.48),rgba(15,23,42,0.96))] p-6 md:p-8">
+              <div className="flex flex-wrap items-start justify-between gap-5">
+                <div className="max-w-2xl">
+                  <span className="inline-flex items-center gap-2 rounded-full border border-violet-300/20 bg-violet-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-violet-200">
+                    <MessageSquare size={14} /> Personalized practice
+                  </span>
+                  <h3 className="mt-4 text-2xl font-bold text-white md:text-3xl">Live AI Mock Interview</h3>
+                  <p className="mt-3 text-sm leading-6 text-slate-300">
+                    Practice a five-question interview tailored to your resume and target role.
+                    Get honest, specific coaching after every answer.
+                  </p>
+                </div>
+                <div className="job-match-privacy rounded-2xl border border-white/10 bg-slate-950/30 px-4 py-3 text-sm text-slate-300">
+                  <p className="font-semibold text-white">Practice in private</p>
+                  <p className="mt-1 max-w-xs text-xs leading-5 text-slate-400">Your answers are used to coach this session and aren’t stored in Gemini chat history.</p>
+                </div>
+              </div>
+            </section>
+
+            {!mockInterview ? (
+              <section className="panel-card p-6 md:p-8">
+                <div className="mb-6">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-300">Set up your session</p>
+                  <h4 className="mt-2 text-xl font-semibold text-white">Walk into your next interview ready.</h4>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Questions are grounded in the saved resume you choose. Add a job description for an even closer simulation.</p>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="block text-sm font-medium text-slate-200">
+                    Saved resume
+                    <select
+                      value={resumeFiles.some((resume) => resume.id === interviewResumeId) ? interviewResumeId : resumeFiles[0]?.id || ''}
+                      onChange={(event) => setInterviewResumeId(event.target.value)}
+                      disabled={resumeFiles.length === 0 || mockInterviewBusy}
+                      className="job-match-control mt-2 w-full rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-slate-100 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20 disabled:opacity-60"
+                    >
+                      {resumeFiles.length === 0 && <option value="">Upload a resume to get started</option>}
+                      {resumeFiles.map((resume) => <option key={resume.id} value={resume.id}>{resume.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-sm font-medium text-slate-200">
+                    Target role
+                    <input
+                      value={interviewRole}
+                      onChange={(event) => setInterviewRole(event.target.value)}
+                      disabled={mockInterviewBusy}
+                      maxLength={150}
+                      placeholder="e.g. Frontend Engineer"
+                      className="job-match-control mt-2 w-full rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-slate-100 outline-none placeholder:text-slate-500 focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20"
+                    />
+                  </label>
+                  <label className="block text-sm font-medium text-slate-200 md:col-span-2">
+                    Job description <span className="font-normal text-slate-400">(optional)</span>
+                    <textarea
+                      value={interviewJobDescription}
+                      onChange={(event) => setInterviewJobDescription(event.target.value)}
+                      disabled={mockInterviewBusy}
+                      rows={4}
+                      maxLength={12000}
+                      placeholder="Paste the role requirements to tailor interview questions..."
+                      className="job-match-control mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-500 focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20"
+                    />
+                    <span className="mt-1 block text-right text-xs text-slate-400">{interviewJobDescription.length.toLocaleString()} / 12,000</span>
+                  </label>
+                </div>
+                <div className="mt-5 flex flex-wrap items-center gap-4">
+                  <button
+                    type="button"
+                    className="primary-button inline-flex items-center gap-2"
+                    onClick={() => void beginMockInterview()}
+                    disabled={mockInterviewBusy || resumeFiles.length === 0 || interviewRole.trim().length < 2}
+                  >
+                    <MessageSquare size={16} />
+                    {mockInterviewBusy ? 'Preparing your interview…' : 'Start mock interview'}
+                  </button>
+                  {resumeFiles.length === 0 && <button type="button" className="text-sm font-medium text-sky-300" onClick={() => navigate('/dashboard/resume-analyzer')}>Upload a resume first <ChevronRight className="inline" size={15} /></button>}
+                  <span className="text-xs text-slate-400">5 questions · instant coaching · final scorecard</span>
+                </div>
+                {mockInterviewBusy && <p role="status" className="mt-4 text-sm text-violet-200">Building questions from your resume and target role…</p>}
+              </section>
+            ) : (
+              <>
+                <section className="panel-card p-6">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-300">{mockInterview.completed ? 'Interview complete' : `Question ${mockInterview.questionNumber} of 5`}</p>
+                      <h4 className="mt-1 text-lg font-semibold text-white">{mockInterview.role} interview practice</h4>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {mockInterview.completed && <span className="score-pill">Overall {averageScore}/100</span>}
+                      <button type="button" className="secondary-button inline-flex items-center gap-2" onClick={resetMockInterview}><RotateCcw size={15} /> New session</button>
+                    </div>
+                  </div>
+                  <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-700/70" role="progressbar" aria-label="Interview progress" aria-valuenow={interviewProgress} aria-valuemin={0} aria-valuemax={100}>
+                    <div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-violet-400 transition-all" style={{ width: `${interviewProgress}%` }} />
+                  </div>
+                  <div className="mt-2 flex justify-between text-xs text-slate-400"><span>Warm-up</span><span>{mockInterview.turns.length} answered</span><span>Scorecard</span></div>
+                </section>
+
+                {!mockInterview.completed && (
+                  <section className="panel-card p-6 md:p-8">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="tag-pill">{mockInterview.question.question_type}</span>
+                      <span className="text-sm text-slate-400">Interviewer focus: {mockInterview.question.focus}</span>
+                    </div>
+                    <h4 className="mt-5 max-w-4xl text-xl font-semibold leading-8 text-white md:text-2xl">{mockInterview.question.question}</h4>
+                    <label className="mt-6 block text-sm font-medium text-slate-200">
+                      Your answer
+                      <textarea
+                        value={mockInterviewAnswer}
+                        onChange={(event) => setMockInterviewAnswer(event.target.value)}
+                        disabled={mockInterviewBusy}
+                        rows={7}
+                        maxLength={4000}
+                        placeholder="Structure your answer with a specific situation, what you did, and the result..."
+                        className="job-match-control mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-500 focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20"
+                      />
+                      <span className="mt-1 block text-right text-xs text-slate-400">{mockInterviewAnswer.length.toLocaleString()} / 4,000 · minimum 20 characters</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="primary-button mt-4 inline-flex items-center gap-2"
+                      onClick={() => void submitMockInterviewAnswer()}
+                      disabled={mockInterviewBusy || mockInterviewAnswer.trim().length < 20}
+                    >
+                      {mockInterviewBusy ? 'Reviewing your answer…' : 'Submit answer'}
+                      {!mockInterviewBusy && <ChevronRight size={16} />}
+                    </button>
+                    {mockInterviewBusy && <p role="status" className="mt-3 text-sm text-violet-200">Your coach is reviewing the evidence, structure, and clarity of your answer…</p>}
+                  </section>
+                )}
+
+                {latestTurn && (
+                  <section className="panel-card space-y-5 p-6">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Answer coaching</p>
+                        <h4 className="mt-1 text-lg font-semibold text-white">Question {mockInterview.turns.length} feedback</h4>
+                      </div>
+                      <span className="score-pill">{latestTurn.score}/100</span>
+                    </div>
+                    <p className="rounded-2xl border border-slate-700/70 bg-slate-950/30 p-4 text-sm leading-6 text-slate-300">{latestTurn.feedback}</p>
+                    <div className="grid gap-5 md:grid-cols-2">
+                      <div>
+                        <h5 className="font-semibold text-emerald-300">What worked</h5>
+                        <ul className="mt-2 space-y-2 text-sm text-slate-300">{latestTurn.strengths.map((item) => <li key={item}>✓ {item}</li>)}</ul>
+                      </div>
+                      <div>
+                        <h5 className="font-semibold text-amber-300">Try next time</h5>
+                        <ul className="mt-2 space-y-2 text-sm text-slate-300">{latestTurn.improvements.map((item) => <li key={item}>→ {item}</li>)}</ul>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-violet-400/15 bg-violet-400/5 p-4">
+                      <h5 className="font-semibold text-violet-200">Answer framework to consider</h5>
+                      <p className="mt-2 text-sm leading-6 text-slate-300">{latestTurn.sample_answer}</p>
+                    </div>
+                  </section>
+                )}
+
+                {mockInterview.completed && (
+                  <section className="panel-card p-6 md:p-8">
+                    <div className="flex items-center gap-3">
+                      <div className="grid h-11 w-11 place-items-center rounded-2xl bg-amber-400/10 text-amber-300"><Trophy size={22} /></div>
+                      <div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Your interview scorecard</p><h4 className="mt-1 text-xl font-semibold text-white">You completed all five questions</h4></div>
+                    </div>
+                    <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                      {[
+                        { label: 'Overall score', value: averageScore },
+                        { label: 'Strongest answer', value: Math.max(...mockInterview.turns.map((turn) => turn.score)) },
+                        { label: 'Questions completed', value: mockInterview.turns.length },
+                      ].map((metric) => (
+                        <div key={metric.label} className="metric-card">
+                          <p className="text-sm text-slate-400">{metric.label}</p>
+                          <p className="mt-2 text-3xl font-bold text-white">{metric.value}{metric.label !== 'Questions completed' ? '/100' : ''}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-6 space-y-3">
+                      {mockInterview.turns.map((turn, index) => (
+                        <div key={`${index}-${turn.question}`} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-700/70 bg-slate-950/30 p-4">
+                          <div className="max-w-3xl"><p className="text-xs font-semibold text-slate-400">QUESTION {index + 1}</p><p className="mt-1 text-sm text-slate-200">{turn.question}</p></div>
+                          <span className="score-pill">{turn.score}/100</span>
+                        </div>
+                      ))}
+                    </div>
+                    <button type="button" className="primary-button mt-6 inline-flex items-center gap-2" onClick={resetMockInterview}><RotateCcw size={16} /> Practice again</button>
+                  </section>
+                )}
+              </>
+            )}
+          </div>
+        )
+      }
       case 'skills-analysis':
         return (
           <div className="grid gap-6 xl:grid-cols-2">
@@ -950,7 +1572,7 @@ function DashboardPage({ user, theme, setTheme, setUser }: { user: User | null; 
               ))}
             </div>
             <div className="mt-6 max-h-96 space-y-3 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-sm text-slate-200">
-              {mentorMessages.length === 0 && <p className="text-slate-400">Your saved mentor conversation will appear here.</p>}
+              {mentorMessages.length === 0 && <p className="text-slate-400">Your conversation for this session will appear here.</p>}
               {mentorMessages.map((message) => (
                 <div key={message.id} className={message.role === 'user' ? 'text-right' : 'text-left'}>
                   <span className="mb-1 block text-xs text-slate-400">{message.role === 'user' ? 'You' : 'Career mentor'}</span>

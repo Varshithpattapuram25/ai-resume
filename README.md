@@ -7,16 +7,101 @@ A full-stack SaaS-style application for resume analysis, ATS scoring, skill gap 
 - `client/` – Vite + React + TypeScript frontend
 - `server/` – Express.js backend API
 
-## Frontend setup
+## Supabase setup
+
+The application uses Supabase Authentication, PostgreSQL, and a private Storage
+bucket for account and resume data. Resume files are stored in the `resumes`
+bucket; PostgreSQL stores only the Storage path, file metadata, extracted text,
+and analysis results. The browser uses only the Supabase project URL and anon
+(publishable) key. Never put a Supabase service-role key in the frontend.
+
+1. Create a Supabase project.
+2. In the Supabase SQL Editor, run
+   [`supabase/migrations/20261112000000_create_resume_analyzer_schema.sql`](./supabase/migrations/20261112000000_create_resume_analyzer_schema.sql).
+   It creates the seven tables, indexes, auth profile trigger, RLS policies,
+   private `resumes` bucket, and owner-only Storage policies.
+3. In **Authentication → URL Configuration**, set the local site URL to
+   `http://localhost:5173` and add your production URL to the redirect allow-list.
+   Enable **Allow anonymous sign-ins** under **Authentication → Sign In / Providers → Anonymous Sign-Ins** to use the guest option. Configure email confirmation as required by your deployment.
+4. Copy `client/.env.example` to `client/.env` and set the project URL and anon
+   (publishable) key from **Project Settings → API**.
+5. Copy `server/.env.example` to `server/.env`. Set `GEMINI_API_KEY` from
+   Google AI Studio, and set `SUPABASE_URL` and `SUPABASE_ANON_KEY` to the same
+   Supabase project values used by the client. Keep the Gemini key on the server:
+   never add it to a `VITE_` variable or frontend code.
+6. In `client/.env`, set `VITE_GEMINI_API_BASE=http://localhost:5002/api`.
+   Start the Gemini API and the frontend in separate terminals:
+
+```bash
+cd server
+npm install
+npm run dev:ai
+```
 
 ```bash
 cd client
 npm install
-cp .env.example .env
 npm run dev
+npm run build
+npm run lint
+npm run test:gemini
 ```
 
-## Backend setup
+The root path opens the login page; `/welcome` retains the marketing landing
+page. Create an account with the registration form, confirm the email if
+confirmation is enabled, then log in. Upload PDF or DOCX resumes up to 5 MB.
+Or select **Continue as guest** to use a private, anonymous Supabase account
+without an email or password. Guest data remains isolated by RLS and tied to
+that browser's stored session; signing out ends access to that guest account's
+data, which cannot be recovered through email.
+Resume text is extracted in the browser, sent to the authenticated local Gemini
+API for real AI analysis, then the extracted text and returned analysis are
+saved to Supabase. The Job Match Studio compares a saved resume with a pasted
+job description and returns an evidence-based match score, missing keywords,
+experience gaps, and tailored bullet suggestions. The AI Career Mentor also calls Gemini. Ensure your Google
+AI Studio key has Gemini API access and monitor provider quotas and billing.
+The Live AI Mock Interview runs a five-question session tailored to a saved
+resume and target role, then gives a score and coaching after each answer.
+The API uses `gemini-3.1-flash-lite` through Google's Interactions API by default;
+resume and mentor requests use `store: false` to avoid retaining sensitive
+resume and conversation content in Gemini interaction storage. Change `GEMINI_MODEL` server-side
+to select a supported model. If a model returns a temporary overload, rate
+limit, or server error, the API retries once (honoring short provider retry
+hints) before trying `gemini-3.8-flash`, `gemini-3.7-flash`, and then
+`gemini-3.5-flash-lite` by default. Configure this ordered list with
+`GEMINI_FALLBACK_MODELS` on the server. If all configured models are at
+capacity, wait a minute and retry.
+
+## Database operation smoke test
+
+Create a dedicated test account in the app, then run the following in PowerShell
+from `client` with its credentials set in the environment. The test signs in,
+uploads a temporary private Storage object, inserts a resume and analysis,
+signs out and back in to verify persistence, then deletes the test records:
+
+```powershell
+$env:VITE_SUPABASE_URL = "https://your-project.supabase.co"
+$env:VITE_SUPABASE_ANON_KEY = "your-anon-or-publishable-key"
+$env:SUPABASE_TEST_EMAIL = "your-test-account@example.com"
+$env:SUPABASE_TEST_PASSWORD = "your-test-account-password"
+npm run test:supabase
+```
+
+Do not use a production account for the smoke test.
+
+## Existing API server
+
+The Express server is retained for existing non-resume endpoints and its
+previous MongoDB implementation. The login, resume upload, resume listing,
+analysis history, signed view/download, and delete flows in the frontend use
+Supabase directly and do not require the Express server or its MongoDB database.
+The separate Gemini API service verifies Supabase access tokens and keeps the
+Gemini API key on the server. The Supabase anon key is subject to RLS; no
+service-role key is used by the app.
+
+## Legacy backend setup
+
+If you still use the legacy Express endpoints:
 
 ```bash
 cd server
@@ -26,12 +111,6 @@ npm run dev
 ```
 
 ## Environment variables
-
-### Frontend (`client/.env.example`)
-
-```env
-VITE_API_BASE=http://localhost:5001/api
-```
 
 ### Backend (`server/.env.example`)
 
@@ -55,41 +134,28 @@ GEMINI_API_KEY=
 - AI mentor chat mode with context-aware prompts
 - Demo mode when external AI credentials are not configured
 
-## Database persistence
+## Deploy to Vercel
 
-The API stores accounts, password hashes, uploaded resume files and extracted text,
-resume analyses, career roadmap progress, and mentor conversations in MongoDB.
-Set `MONGODB_URI` to a MongoDB connection string before starting the API. For local
-development, the default is `mongodb://127.0.0.1:27017/careeriq`; make sure MongoDB
-is running. The demo account (`demo@careeriq.ai` / `demo123`) is created in the
-database when the API starts.
-
-For deployment, create a MongoDB Atlas database and set `MONGODB_URI` as a secret
-environment variable for the API service. The Render Blueprint declares this
-variable as required; add it in the Render dashboard after creating the service.
-Never put production database credentials in source control or frontend variables.
-
-## Demo mode note
-
-If AI keys are not available, the app uses structured demo analysis so the product remains functional while still clearly labeling generated estimates.
-
-## Deploy to Vercel and Render
-
-The repository includes a root-level `vercel.json` for the Vite frontend and
-`render.yaml` for the Express API. Deploy the API first, then configure the
-frontend with the API's public URL.
+The repository includes a root-level `vercel.json` for the Vite frontend.
+Supabase handles authentication and resume data, so the primary login and resume
+flows do not require a Render API deployment.
 
 1. Push this project to a GitHub repository.
-2. In Render, create a Blueprint from that repository and apply `render.yaml`.
-   Render generates a `JWT_SECRET` and provides the API URL. Check
-   `https://<your-render-service>.onrender.com/api/health` after it finishes
-   deploying.
-3. In Vercel, import the same repository and use the repository root as the
-   project root. Add the environment variable
-   `VITE_API_BASE=https://<your-render-service>.onrender.com/api` before
-   deploying. The root `vercel.json` builds `client/` and configures SPA routing.
-4. Redeploy the Vercel project after changing `VITE_API_BASE`; Vite embeds this
-   value at build time.
+2. In Vercel, import the repository and use the repository root as the
+   project root. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as
+   environment variables. The root `vercel.json` builds `client/` and configures
+   SPA routing.
+3. Set `VITE_GEMINI_API_BASE` to the deployed Render API URL ending in `/api`.
+   Redeploy Vercel after changing any `VITE_` variable.
+4. Add the deployed Vercel URL to Supabase's Authentication URL allow-list.
+5. In Render, set `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY`.
+   Set `CORS_ORIGINS` to the exact Vercel origin (for example
+   `https://your-app.vercel.app`) and deploy the `render.yaml` Gemini API
+   service. The Gemini key must only be configured as a Render secret.
+
+Deploy the Render service from `render.yaml` only if you still need the legacy
+Express endpoints; that service separately requires its MongoDB and JWT
+environment variables.
 
 The resume analysis and mentor features currently use demo logic without an
 AI provider connection. Do not treat demo scores or recommendations as

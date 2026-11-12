@@ -86,6 +86,23 @@ body.light-theme .metric-card {
   background: rgba(255, 255, 255, 0.7);
 }
 
+body.light-theme .job-match-hero {
+  border-color: rgba(59, 130, 246, 0.2);
+  background: radial-gradient(ellipse at 90% 0%, rgba(124, 58, 237, 0.1), transparent 42%), linear-gradient(135deg, #eff6ff, #f5f3ff);
+}
+body.light-theme .job-match-privacy {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.75);
+}
+body.light-theme .job-match-control {
+  border-color: rgba(100, 116, 139, 0.28);
+  background: rgba(255, 255, 255, 0.9);
+  color: #0f172a !important;
+}
+body.light-theme .job-match-control::placeholder { color: #64748b !important; }
+body.light-theme .job-match-score-core { background: #0f172a; }
+body.light-theme .job-match-score-value { color: #f8fafc !important; }
+
 button, input { font: inherit; }
 button { cursor: pointer; }
 img, svg { display: block; }

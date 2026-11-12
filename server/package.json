@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev:ai": "nodemon gemini-api.js",
+    "start:ai": "node gemini-api.js"
   },
   "keywords": [],
   "author": "",
