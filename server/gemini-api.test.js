@@ -126,6 +126,9 @@ before(async () => {
         headers: { 'Content-Type': 'application/json', 'Retry-After': '0.001' },
       });
     }
+    if (prompt.includes('TRIGGER_TIMEOUT_FOR_TEST')) {
+      throw Object.assign(new Error('Gemini request timed out.'), { name: 'TimeoutError' });
+    }
     if (prompt.includes('Generate the first of five interview questions.')) {
       return new Response(JSON.stringify({
         steps: [{
@@ -209,6 +212,16 @@ test('analysis retries a transient 429 before using a fallback model', async () 
     .filter((call) => call.url.endsWith('/v1beta/interactions') && call.options.body.includes('TRIGGER_TRANSIENT_ONCE'))
     .map((call) => JSON.parse(call.options.body).model);
   assert.deepEqual(requestedModels, ['gemini-3.1-flash-lite', 'gemini-3.1-flash-lite']);
+});
+
+test('analysis returns a clear error when all Gemini models time out', async () => {
+  const result = await request('/api/ai/analyze', {
+    text: 'TRIGGER_TIMEOUT_FOR_TEST Resume content.',
+    targetRole: 'Frontend Developer',
+  });
+
+  assert.equal(result.status, 502);
+  assert.match(result.body.message, /Gemini did not respond in time/);
 });
 
 after(async () => {
