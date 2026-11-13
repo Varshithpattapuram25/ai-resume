@@ -235,6 +235,12 @@ test('analysis rejects requests without an authenticated Supabase session', asyn
   assert.equal(upstreamCalls.some((call) => call.options.body?.includes('UNAUTHENTICATED_SENTINEL_RESUME')), false);
 });
 
+test('analysis route works when the deployment strips the /api prefix', async () => {
+  const result = await request('/ai/analyze', { text: 'UNAUTHENTICATED_STRIPPED_PREFIX_RESUME' }, '');
+  assert.equal(result.status, 401);
+  assert.equal(upstreamCalls.some((call) => call.options.body?.includes('UNAUTHENTICATED_STRIPPED_PREFIX_RESUME')), false);
+});
+
 test('analysis verifies the user and returns validated Gemini analysis', async () => {
   const result = await request('/api/ai/analyze', {
     text: 'NORMAL_ANALYSIS_SENTINEL Built React applications and shipped accessible interfaces.',

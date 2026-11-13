@@ -36,6 +36,12 @@ app.use(cors({
   },
 }));
 app.use(express.json({ limit: '100kb' }));
+app.use((req, _res, next) => {
+  if (req.path === '/health' || req.path === '/ai' || req.path.startsWith('/ai/')) {
+    req.url = `/api${req.url}`;
+  }
+  next();
+});
 
 const authMiddleware = async (req, res, next) => {
   const authorization = req.headers.authorization || '';
